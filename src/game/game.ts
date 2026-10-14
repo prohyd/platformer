@@ -27,6 +27,21 @@ function fmt(t: number) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+type VolumeKind = 'master' | 'music' | 'sfx';
+const VOLUME_ROWS: [VolumeKind, string][] = [
+  ['master', 'Общая громкость'],
+  ['music', 'Музыка'],
+  ['sfx', 'Эффекты'],
+];
+
+interface Slider {
+  kind: VolumeKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 interface Loaded {
   buffer: AudioBuffer;
   analysis: Analysis;
@@ -63,6 +78,9 @@ export class Game {
   comboPulse = 0;
   fileInput: HTMLInputElement;
   dragging = false;
+  sliders: Slider[] = [];
+  dragSlider: VolumeKind | null = null;
+  showSettings = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -98,6 +116,10 @@ export class Game {
         return;
       }
       if (e.code === 'KeyM') return this.audio.toggleMute();
+      if (this.screen === 'menu' && this.showSettings) {
+        if (e.code === 'Escape' || e.code === 'Space' || e.code === 'Enter') this.showSettings = false;
+        return;
+      }
       if (this.screen === 'menu') {
         const n = this.tracks.length;
         if (e.code === 'ArrowDown' && n) this.select((this.sel + 1) % n);
@@ -134,12 +156,21 @@ export class Game {
     };
     this.canvas.addEventListener('pointermove', (e) => {
       this.mouse = pos(e);
-      this.canvas.style.cursor = this.screen !== 'play' && this.buttons.some((b) => this.hit(b)) ? 'pointer' : 'default';
+      if (this.dragSlider) this.dragTo(this.dragSlider);
+      const overSlider = this.sliders.some((sl) => this.overSlider(sl));
+      this.canvas.style.cursor = this.screen !== 'play' && (overSlider || this.buttons.some((b) => this.hit(b))) ? 'pointer' : 'default';
     });
     this.canvas.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       this.audio.unlock();
       this.mouse = pos(e);
+      const sl = this.sliders.find((s2) => this.overSlider(s2));
+      if (sl) {
+        this.dragSlider = sl.kind;
+        this.canvas.setPointerCapture(e.pointerId);
+        this.dragTo(sl.kind);
+        return;
+      }
       const b = this.buttons.find((bb) => this.hit(bb));
       if (b) {
         this.audio.sound('click');
@@ -148,7 +179,13 @@ export class Game {
       }
       if (this.screen === 'play') this.press();
     });
-    this.canvas.addEventListener('pointerup', () => (this.held = false));
+    this.canvas.addEventListener('pointerup', () => {
+      this.held = false;
+      if (this.dragSlider) {
+        this.dragSlider = null;
+        this.audio.sound('PERFECT');
+      }
+    });
     this.canvas.addEventListener(
       'wheel',
       (e) => {
@@ -171,6 +208,16 @@ export class Game {
         this.addFile(f);
       }
     });
+  }
+
+  private overSlider(sl: Slider) {
+    const m = this.mouse;
+    return m.x >= sl.x - 10 && m.x <= sl.x + sl.w + 10 && m.y >= sl.y - 10 && m.y <= sl.y + sl.h + 10;
+  }
+
+  private dragTo(kind: VolumeKind) {
+    const sl = this.sliders.find((s2) => s2.kind === kind);
+    if (sl) this.audio.setVolume(kind, (this.mouse.x - sl.x) / sl.w);
   }
 
   private hit(b: Button) {
@@ -432,9 +479,16 @@ export class Game {
     const W = this.canvas.width / dpr;
     const H = this.canvas.height / dpr;
     this.buttons = [];
+    this.sliders = [];
     switch (this.screen) {
       case 'menu':
         this.drawMenu(W, H);
+        if (this.showSettings) {
+          this.buttons = [];
+          this.drawSettings(W, H);
+        } else {
+          this.drawGearButton(W);
+        }
         break;
       case 'loading':
         this.drawLoading(W, H);
@@ -461,6 +515,29 @@ export class Game {
       ctx.setLineDash([]);
       this.text('Отпусти файл — уровень построится под твой трек', W / 2, H / 2, 24, '#fff', 'center', 800, r.pal.neon);
     }
+  }
+
+  private drawGearButton(W: number) {
+    const ctx = this.r.ctx;
+    const x = W - 100;
+    const y = 14;
+    this.buttons.push({ x, y, w: 40, h: 40, action: () => (this.showSettings = true), id: 'gear' });
+    this.panel(x, y, 40, 40, 0.5);
+    const cx = x + 20;
+    const cy = y + 20;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const r = i % 2 ? 8 : 11;
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#1a1030';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   private drawSoundButton(W: number) {
@@ -707,14 +784,61 @@ export class Game {
     const ctx = this.r.ctx;
     ctx.fillStyle = 'rgba(5,0,15,0.6)';
     ctx.fillRect(0, 0, W, H);
-    const pw = Math.min(340, W - 30);
+    const pw = Math.min(360, W - 30);
     const x = W / 2 - pw / 2;
-    const y = H / 2 - 130;
-    this.panel(x, y, pw, 260, 0.8);
+    const y = Math.max(8, H / 2 - 205);
+    this.panel(x, y, pw, 410, 0.85);
     this.text('Пауза', W / 2, y + 44, 36, '#fff', 'center', 900, this.r.pal.neon);
     this.button('resume', x + 24, y + 84, pw - 48, 48, 'Продолжить', () => this.resume(), true);
     this.button('restart', x + 24, y + 142, pw - 48, 42, 'Заново', () => void this.start(this.track!, this.mode === 'hardcore'));
     this.button('menu', x + 24, y + 194, pw - 48, 42, 'В меню', () => this.toMenu());
+    this.drawVolume(x + 24, y + 262, pw - 48);
+  }
+
+  /** Three volume sliders. */
+  private drawVolume(x: number, y: number, w: number) {
+    const ctx = this.r.ctx;
+    const p = this.r.pal;
+    VOLUME_ROWS.forEach(([kind, label], i) => {
+      const ry = y + i * 46;
+      const v = this.audio.volume[kind];
+      const muted = kind === 'master' && this.audio.muted;
+      this.text(label, x, ry + 8, 13, 'rgba(255,255,255,0.8)', 'left', 700);
+      this.text(muted ? 'выкл' : `${Math.round(v * 100)}%`, x + w, ry + 8, 13, muted ? '#ff6b8b' : '#fff', 'right', 800);
+      const sy = ry + 26;
+      const sh = 8;
+      this.sliders.push({ kind, x, y: sy - 4, w, h: sh + 8 });
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.beginPath();
+      ctx.roundRect(x, sy, w, sh, 4);
+      ctx.fill();
+      const fill = muted ? 0 : v;
+      const col = kind === 'music' ? p.neon2 : kind === 'sfx' ? p.accent : p.neon;
+      ctx.fillStyle = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.roundRect(x, sy, Math.max(sh, w * fill), sh, 4);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(x + w * fill, sy + sh / 2, this.dragSlider === kind ? 10 : 8, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  private drawSettings(W: number, H: number) {
+    const ctx = this.r.ctx;
+    ctx.fillStyle = 'rgba(5,0,15,0.65)';
+    ctx.fillRect(0, 0, W, H);
+    const pw = Math.min(380, W - 30);
+    const x = W / 2 - pw / 2;
+    const y = H / 2 - 150;
+    this.panel(x, y, pw, 300, 0.9);
+    this.text('Громкость', W / 2, y + 40, 28, '#fff', 'center', 900, this.r.pal.neon);
+    this.drawVolume(x + 28, y + 76, pw - 56);
+    this.button('close', x + 28, y + 228, pw - 56, 48, 'Готово', () => (this.showSettings = false), true);
   }
 
   private drawResults(W: number, H: number) {

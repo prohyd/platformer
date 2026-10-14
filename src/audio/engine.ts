@@ -15,17 +15,22 @@ export class AudioEngine {
   private filter!: BiquadFilterNode;
   private analyser!: AnalyserNode;
   private sfx!: GainNode;
+  private musicVol!: GainNode;
   private noise!: AudioBuffer;
   private freq = new Uint8Array(512);
   private source: AudioBufferSourceNode | null = null;
   private startAt = 0;
   muted = false;
   sfxOn = true;
+  /** 0..1 each, saved in the browser. */
+  volume = { master: 0.9, music: 1, sfx: 0.8 };
   readonly levels: Levels = { bass: 0, mid: 0, high: 0, bands: new Float32Array(48) };
 
   constructor() {
     try {
       this.muted = localStorage.getItem('pryg-muted') === '1';
+      const v = JSON.parse(localStorage.getItem('pryg-volume') ?? 'null') as Partial<AudioEngine['volume']> | null;
+      if (v) this.volume = { ...this.volume, ...v };
     } catch {
       /* storage unavailable */
     }
@@ -37,7 +42,7 @@ export class AudioEngine {
       this.ctx = new AC({ latencyHint: 'interactive' });
       const c = this.ctx;
       this.master = c.createGain();
-      this.master.gain.value = this.muted ? 0 : 1;
+      this.master.gain.value = this.muted ? 0 : this.volume.master ** 2;
       this.master.connect(c.destination);
       this.filter = c.createBiquadFilter();
       this.filter.type = 'lowpass';
@@ -47,10 +52,13 @@ export class AudioEngine {
       this.analyser = c.createAnalyser();
       this.analyser.fftSize = 1024;
       this.analyser.smoothingTimeConstant = 0.55;
-      this.music.connect(this.filter).connect(this.master);
+      this.musicVol = c.createGain();
+      this.musicVol.gain.value = this.volume.music ** 2;
+      this.music.connect(this.filter).connect(this.musicVol).connect(this.master);
+      // the analyser listens before the volume knob, so visuals keep dancing at any volume
       this.music.connect(this.analyser);
       this.sfx = c.createGain();
-      this.sfx.gain.value = 0.35;
+      this.sfx.gain.value = 0.5 * this.volume.sfx ** 2;
       this.sfx.connect(this.master);
       this.noise = c.createBuffer(1, c.sampleRate, c.sampleRate);
       const d = this.noise.getChannelData(0);
@@ -71,7 +79,29 @@ export class AudioEngine {
     } catch {
       /* ignore */
     }
-    if (this.ctx) this.master.gain.setTargetAtTime(this.muted ? 0 : 1, this.ctx.currentTime, 0.03);
+    this.applyVolume();
+  }
+
+  setVolume(kind: keyof AudioEngine['volume'], v: number) {
+    this.volume[kind] = Math.max(0, Math.min(1, v));
+    if (kind === 'master' && v > 0 && this.muted) this.muted = false;
+    try {
+      localStorage.setItem('pryg-volume', JSON.stringify(this.volume));
+      localStorage.setItem('pryg-muted', this.muted ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+    this.applyVolume();
+  }
+
+  private applyVolume() {
+    const c = this.ctx;
+    if (!c) return;
+    // squared curve feels more natural to the ear than a linear one
+    const curve = (v: number) => v * v;
+    this.master.gain.setTargetAtTime(this.muted ? 0 : curve(this.volume.master), c.currentTime, 0.03);
+    this.musicVol.gain.setTargetAtTime(curve(this.volume.music), c.currentTime, 0.03);
+    this.sfx.gain.setTargetAtTime(0.5 * curve(this.volume.sfx), c.currentTime, 0.03);
   }
 
   /** Start the song so that song time 0 happens after `lead` seconds. */
