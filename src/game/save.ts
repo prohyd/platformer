@@ -1,44 +1,73 @@
-// Progress is stored in the browser (per player, per device).
-export interface LevelRecord {
-  time: number;
-  gems: number;
-  deaths: number;
+// Best results per track and difficulty, stored in this browser.
+export interface Best {
+  score: number;
+  rank: string;
+  acc: number;
+  combo: number;
+  /** Hardcore: was the song finished? If not, `progress` is the best reach 0..1. */
+  done?: boolean;
+  progress?: number;
 }
 
-export interface SaveData {
-  unlocked: number;
-  best: Record<number, LevelRecord>;
-}
+const KEY = 'pryg-rhythm-v1';
+type Store = Record<string, Best>;
 
-const KEY = 'pryg-save-v1';
-
-export function loadSave(): SaveData {
+function load(): Store {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-      const d = JSON.parse(raw) as SaveData;
-      if (typeof d.unlocked === 'number' && d.best) return d;
-    }
+    return JSON.parse(localStorage.getItem(KEY) ?? '{}') as Store;
   } catch {
-    /* storage unavailable */
-  }
-  return { unlocked: 0, best: {} };
-}
-
-export function writeSave(d: SaveData) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(d));
-  } catch {
-    /* storage unavailable */
+    return {};
   }
 }
 
-export function recordLevel(d: SaveData, index: number, rec: LevelRecord, total: number): SaveData {
-  const prev = d.best[index];
-  d.best[index] = prev
-    ? { time: Math.min(prev.time, rec.time), gems: Math.max(prev.gems, rec.gems), deaths: Math.min(prev.deaths, rec.deaths) }
-    : rec;
-  d.unlocked = Math.min(total - 1, Math.max(d.unlocked, index + 1));
-  writeSave(d);
-  return d;
+let store = load();
+
+const key = (trackId: string, diff: number, mode: string) => (mode === 'flow' ? `${trackId}#${diff}` : `${trackId}#${mode}#${diff}`);
+
+export function getBest(trackId: string, diff: number, mode = 'flow'): Best | undefined {
+  return store[key(trackId, diff, mode)];
+}
+
+function write(k: string, b: Best) {
+  store = { ...store, [k]: b };
+  try {
+    localStorage.setItem(KEY, JSON.stringify(store));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Hardcore: remember how far the player got. Returns true if it is further than before. */
+export function saveProgress(trackId: string, diff: number, progress: number): boolean {
+  const k = key(trackId, diff, 'hardcore');
+  const prev = store[k];
+  if (prev && (prev.done || (prev.progress ?? 0) >= progress)) return false;
+  write(k, { score: 0, rank: '', acc: 0, combo: 0, done: false, progress });
+  return true;
+}
+
+/** Returns true if this is a new record. */
+export function saveBest(trackId: string, diff: number, b: Best, mode = 'flow'): boolean {
+  const k = key(trackId, diff, mode);
+  const prev = store[k];
+  if (prev && (prev.done ?? true) && prev.score >= b.score) return false;
+  write(k, { ...b, done: true, progress: 1 });
+  return true;
+}
+
+export function getSetting<T>(name: string, def: T): T {
+  try {
+    const v = localStorage.getItem(`pryg-set-${name}`);
+    return v === null ? def : (JSON.parse(v) as T);
+  } catch {
+    return def;
+  }
+}
+
+export function setSetting(name: string, v: unknown) {
+  try {
+    localStorage.setItem(`pryg-set-${name}`, JSON.stringify(v));
+  } catch {
+    /* ignore */
+  }
 }

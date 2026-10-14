@@ -1,409 +1,479 @@
-import { DT, TILE } from '../engine/constants.ts';
-import { parseLevel } from '../engine/level.ts';
-import { Sim } from '../engine/sim.ts';
-import { LEVELS } from '../levels/index.ts';
-import { Audio } from './audio.ts';
-import { Renderer } from './renderer.ts';
-import { loadSave, recordLevel, type SaveData } from './save.ts';
-import { THEMES } from './themes.ts';
+import { analyze, type Analysis } from '../audio/analyze.ts';
+import { AudioEngine } from '../audio/engine.ts';
+import { PLAYLIST, trackFromName, type Track } from '../playlist.ts';
+import { buildChart, DIFF_NAMES, hashString, MODE_NAMES, type Chart, type Difficulty, type Mode } from '../rhythm/chart.ts';
+import { Run, type Grade } from '../rhythm/run.ts';
+import { palette, Renderer } from './render.ts';
+import { getBest, getSetting, saveBest, saveProgress, setSetting, type Best } from './save.ts';
 
-type Screen = 'title' | 'select' | 'play' | 'pause' | 'complete' | 'victory';
+type Screen = 'menu' | 'loading' | 'play' | 'pause' | 'results';
 
 interface Button {
   x: number;
   y: number;
   w: number;
   h: number;
-  label: string;
-  sub?: string;
   action: () => void;
-  locked?: boolean;
-  primary?: boolean;
-  icon?: string;
+  id: string;
 }
 
 const FONT = '"Rubik", "Segoe UI", system-ui, sans-serif';
+const LEAD = 2.4;
+const AUTOPLAY = new URLSearchParams(location.search).has('autoplay');
 
-function fmtTime(t: number) {
+function fmt(t: number) {
   const m = Math.floor(t / 60);
   const s = Math.floor(t % 60);
-  const cs = Math.floor((t * 100) % 100);
-  return `${m}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+interface Loaded {
+  buffer: AudioBuffer;
+  analysis: Analysis;
 }
 
 export class Game {
   canvas: HTMLCanvasElement;
   r: Renderer;
-  audio = new Audio();
-  save: SaveData = loadSave();
-  screen: Screen = 'title';
-  levelIndex = 0;
-  sim: Sim | null = null;
-  /** Demo sim shown behind the title screen. */
-  demo: Sim;
-  acc = 0;
+  audio = new AudioEngine();
+  screen: Screen = 'menu';
+  tracks: Track[] = [...PLAYLIST];
+  sel = 0;
+  diff: Difficulty = getSetting<Difficulty>('diff', 1);
+  mode: Mode = getSetting<Mode>('mode', 'flow');
+  attempts = 1;
+  deathTimer = -1;
+  death = { progress: 0, record: false };
+  cache = new Map<string, Loaded>();
+  track: Track | null = null;
+  loaded: Loaded | null = null;
+  chart: Chart | null = null;
+  run: Run | null = null;
+  presses: number[] = [];
   held = false;
-  latched = false;
-  levelTime = 0;
-  winTimer = -1;
-  bannerT = 0;
-  bossBanner = 0;
+  loadProgress = 0;
+  loadError = '';
   buttons: Button[] = [];
-  hudButtons: Button[] = [];
-  focus = 0;
   mouse = { x: -1, y: -1 };
+  scroll = 0;
   last = 0;
-  selectPage = 0;
-  completeStats = { time: 0, deaths: 0, gems: 0, total: 0, record: false };
+  dropI = 0;
+  autoI = 0;
+  result: { best: Best; record: boolean; notes: number; totalNotes: number; attempts: number } | null = null;
+  comboPulse = 0;
+  fileInput: HTMLInputElement;
+  dragging = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.r = new Renderer(canvas);
-    this.demo = new Sim(parseLevel(LEVELS[0]));
-    this.r.setLevel(this.demo);
+    this.sel = Math.min(getSetting('sel', 0), Math.max(0, this.tracks.length - 1));
+    this.fileInput = document.createElement('input');
+    this.fileInput.type = 'file';
+    this.fileInput.accept = 'audio/*,.mp3,.ogg,.wav,.m4a,.flac';
+    this.fileInput.style.display = 'none';
+    document.body.appendChild(this.fileInput);
+    this.fileInput.addEventListener('change', () => {
+      const f = this.fileInput.files?.[0];
+      if (f) this.addFile(f);
+      this.fileInput.value = '';
+    });
     this.bindInput();
     window.addEventListener('resize', () => this.r.resize());
+    if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).dbg = { buildChart, Run, analyze, game: this };
     requestAnimationFrame((t) => this.frame(t));
   }
 
-  // ------------------------------------------------------------------ input
+  // ---------------------------------------------------------------- input
 
   private bindInput() {
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'ArrowDown') e.preventDefault();
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
       this.audio.unlock();
       if (e.repeat) return;
       if (this.screen === 'play') {
-        if (e.code === 'Space') {
-          if (!this.held) this.latched = true;
-          this.held = true;
-        } else if (e.code === 'Escape' || e.code === 'KeyP') this.pause();
+        if (e.code === 'Space') this.press();
+        else if (e.code === 'Escape' || e.code === 'KeyP') this.pause();
         else if (e.code === 'KeyM') this.audio.toggleMute();
         return;
       }
       if (e.code === 'KeyM') return this.audio.toggleMute();
-      if (e.code === 'Escape') {
-        if (this.screen === 'pause') return this.resume();
-        if (this.screen === 'select') return this.goTitle();
-      }
-      const n = this.buttons.length;
-      if (!n) return;
-      if (e.code === 'ArrowRight' || e.code === 'ArrowDown' || e.code === 'Tab') {
-        e.preventDefault();
-        this.focus = (this.focus + 1) % n;
-        this.audio.play('click');
-      } else if (e.code === 'ArrowLeft' || e.code === 'ArrowUp') {
-        this.focus = (this.focus - 1 + n) % n;
-        this.audio.play('click');
-      } else if (e.code === 'Space' || e.code === 'Enter') {
-        const b = this.buttons[this.focus];
-        if (b && !b.locked) {
-          this.audio.play('click');
-          b.action();
+      if (this.screen === 'menu') {
+        const n = this.tracks.length;
+        if (e.code === 'ArrowDown' && n) this.select((this.sel + 1) % n);
+        else if (e.code === 'ArrowUp' && n) this.select((this.sel - 1 + n) % n);
+        else if (e.code === 'ArrowLeft') this.setDiff(Math.max(0, this.diff - 1) as Difficulty);
+        else if (e.code === 'ArrowRight') this.setDiff(Math.min(2, this.diff + 1) as Difficulty);
+        else if ((e.code === 'Space' || e.code === 'Enter') && n) void this.start(this.tracks[this.sel]);
+        else if (e.code === 'KeyO') this.fileInput.click();
+        else if (e.code === 'Tab') {
+          e.preventDefault();
+          this.setMode(this.mode === 'flow' ? 'hardcore' : 'flow');
         }
+      } else if (this.screen === 'pause') {
+        if (e.code === 'Escape' || e.code === 'Space') this.resume();
+      } else if (this.screen === 'results') {
+        if (e.code === 'Space' || e.code === 'Enter') void this.start(this.track!);
+        else if (e.code === 'Escape') this.toMenu();
+        else if (e.code === 'ArrowRight') this.next();
+      } else if (this.screen === 'loading' && e.code === 'Escape') {
+        this.toMenu();
       }
     });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') this.held = false;
     });
-    window.addEventListener('blur', () => {
-      this.held = false;
-      if (this.screen === 'play') this.pause();
+    window.addEventListener('blur', () => this.pause());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.pause();
     });
 
-    const pos = (e: PointerEvent) => {
-      const rect = this.canvas.getBoundingClientRect();
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const pos = (e: PointerEvent | WheelEvent) => {
+      const rc = this.canvas.getBoundingClientRect();
+      return { x: e.clientX - rc.left, y: e.clientY - rc.top };
     };
     this.canvas.addEventListener('pointermove', (e) => {
       this.mouse = pos(e);
-      const all = this.screen === 'play' ? this.hudButtons : [...this.buttons, ...this.hudButtons];
-      this.canvas.style.cursor = all.some((b) => this.hit(b, this.mouse) && !b.locked) ? 'pointer' : 'default';
-      const i = this.buttons.findIndex((b) => this.hit(b, this.mouse));
-      if (i >= 0) this.focus = i;
+      this.canvas.style.cursor = this.screen !== 'play' && this.buttons.some((b) => this.hit(b)) ? 'pointer' : 'default';
     });
     this.canvas.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       this.audio.unlock();
-      const p = pos(e);
-      this.mouse = p;
-      for (const b of this.hudButtons) {
-        if (this.hit(b, p)) {
-          this.audio.play('click');
-          b.action();
-          return;
-        }
-      }
-      if (this.screen === 'play') {
-        if (!this.held) this.latched = true;
-        this.held = true;
-        this.canvas.setPointerCapture(e.pointerId);
+      this.mouse = pos(e);
+      const b = this.buttons.find((bb) => this.hit(bb));
+      if (b) {
+        this.audio.sound('click');
+        b.action();
         return;
       }
-      for (const b of this.buttons) {
-        if (this.hit(b, p) && !b.locked) {
-          this.audio.play('click');
-          b.action();
-          return;
-        }
+      if (this.screen === 'play') this.press();
+    });
+    this.canvas.addEventListener('pointerup', () => (this.held = false));
+    this.canvas.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.screen === 'menu') this.scroll = Math.max(0, this.scroll + e.deltaY);
+      },
+      { passive: true },
+    );
+
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      this.dragging = true;
+    });
+    window.addEventListener('dragleave', () => (this.dragging = false));
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      this.dragging = false;
+      const f = e.dataTransfer?.files?.[0];
+      if (f) {
+        this.audio.unlock();
+        this.addFile(f);
       }
     });
-    const up = () => {
-      this.held = false;
-    };
-    this.canvas.addEventListener('pointerup', up);
-    this.canvas.addEventListener('pointercancel', up);
   }
 
-  private hit(b: Button, p: { x: number; y: number }) {
-    return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+  private hit(b: Button) {
+    return this.mouse.x >= b.x && this.mouse.x <= b.x + b.w && this.mouse.y >= b.y && this.mouse.y <= b.y + b.h;
   }
 
-  // ------------------------------------------------------------------ flow
+  private press() {
+    if (!this.run || AUTOPLAY) return;
+    if (this.held) return;
+    this.held = true;
+    this.presses.push(this.audio.songTime());
+  }
 
-  startLevel(i: number) {
-    this.levelIndex = i;
-    const L = parseLevel(LEVELS[i]);
-    this.sim = new Sim(L);
-    this.r.setLevel(this.sim);
-    this.acc = 0;
-    this.levelTime = 0;
-    this.winTimer = -1;
-    this.bannerT = 0;
-    this.bossBanner = 0;
-    this.held = false;
-    this.latched = false;
-    this.screen = 'play';
+  private select(i: number) {
+    this.sel = i;
+    setSetting('sel', i);
+    this.audio.sound('click');
+  }
+
+  private setMode(m: Mode) {
+    this.mode = m;
+    setSetting('mode', m);
+    this.audio.sound('click');
+  }
+
+  private setDiff(d: Difficulty) {
+    this.diff = d;
+    setSetting('diff', d);
+    this.audio.sound('click');
+  }
+
+  private addFile(f: File) {
+    const id = `file:${f.name}:${f.size}`;
+    let t = this.tracks.find((x) => x.id === id);
+    if (!t) {
+      t = { id, file: f, ...trackFromName(f.name) };
+      if (!t.artist) t.artist = 'твой трек';
+      this.tracks.push(t);
+    }
+    this.sel = this.tracks.indexOf(t);
+    void this.start(t);
+  }
+
+  // ---------------------------------------------------------------- flow
+
+  async start(track: Track, again = false) {
     this.audio.unlock();
-    this.audio.startMusic(THEMES[L.def.theme].music, false);
+    this.audio.stop();
+    this.attempts = again ? this.attempts + 1 : 1;
+    this.deathTimer = -1;
+    this.track = track;
+    this.screen = 'loading';
+    this.loadProgress = 0;
+    this.loadError = '';
+    this.r.setPalette(palette(hashString(track.id) % 360), (hashString(track.id) % 100000) + 1);
+    try {
+      let loaded = this.cache.get(track.id);
+      if (!loaded) {
+        const data = track.file ? await track.file.arrayBuffer() : await (await fetch(track.url!)).arrayBuffer();
+        this.loadProgress = 0.08;
+        const buffer = await this.audio.decode(data);
+        const analysis = await analyze(buffer, (p) => (this.loadProgress = 0.1 + p * 0.9));
+        loaded = { buffer, analysis };
+        this.cache.set(track.id, loaded);
+      }
+      if (this.screen !== 'loading' || this.track !== track) return;
+      this.loaded = loaded;
+      this.chart = buildChart(loaded.analysis, this.diff, hashString(track.id), this.mode);
+      const lead = again ? 1.4 : LEAD;
+      this.run = new Run(this.chart, -lead);
+      this.presses = [];
+      this.dropI = 0;
+      this.autoI = 0;
+      this.held = false;
+      this.r.camY = 0;
+      this.audio.play(loaded.buffer, lead);
+      this.screen = 'play';
+    } catch (err) {
+      console.error(err);
+      this.loadError = 'Не получилось прочитать этот файл. Попробуй другой MP3.';
+    }
   }
 
   pause() {
     if (this.screen !== 'play') return;
+    this.audio.pause();
     this.screen = 'pause';
-    this.focus = 0;
-    this.held = false;
   }
 
   resume() {
-    this.screen = 'play';
+    if (this.screen !== 'pause') return;
+    this.audio.resume();
     this.held = false;
-    this.latched = false;
+    this.screen = 'play';
   }
 
-  goTitle() {
-    this.screen = 'title';
-    this.focus = 0;
-    this.audio.stopMusic();
-    this.demo = new Sim(parseLevel(LEVELS[0]));
-    this.r.setLevel(this.demo);
+  toMenu() {
+    this.audio.stop();
+    this.audio.resume();
+    this.screen = 'menu';
+    this.run = null;
+    this.chart = null;
   }
 
-  goSelect() {
-    this.screen = 'select';
-    this.focus = Math.min(this.save.unlocked, LEVELS.length - 1) % 10;
-    this.selectPage = Math.floor(Math.min(this.save.unlocked, LEVELS.length - 1) / 10);
+  next() {
+    if (!this.tracks.length) return;
+    this.sel = (this.tracks.indexOf(this.track!) + 1) % this.tracks.length;
+    void this.start(this.tracks[this.sel]);
   }
 
-  private finishLevel() {
-    const sim = this.sim!;
-    const gems = sim.coinsTaken.reduce((a, b) => a + b, 0);
-    const prev = this.save.best[this.levelIndex];
-    const record = !prev || this.levelTime < prev.time;
-    this.save = recordLevel(this.save, this.levelIndex, { time: this.levelTime, gems, deaths: sim.deaths }, LEVELS.length);
-    this.completeStats = { time: this.levelTime, deaths: sim.deaths, gems, total: sim.L.coins.length, record };
-    this.screen = this.levelIndex === LEVELS.length - 1 ? 'victory' : 'complete';
-    this.focus = 0;
+  private finish() {
+    const run = this.run!;
+    const best: Best = { score: run.score, rank: run.rank, acc: run.accuracy, combo: run.maxCombo };
+    const record = saveBest(this.track!.id, this.diff, best, this.mode);
+    this.result = { best, record, notes: run.notesTaken, totalNotes: this.chart!.notes.length, attempts: this.attempts };
+    this.screen = 'results';
   }
 
-  // ------------------------------------------------------------------ main loop
+  // ---------------------------------------------------------------- loop
 
   private frame(now: number) {
-    const dt = Math.min(0.1, (now - (this.last || now)) / 1000);
+    const dt = Math.min(0.05, (now - (this.last || now)) / 1000);
     this.last = now;
+    const lv = this.audio.readLevels();
+    let songT = 0;
 
-    if (this.screen === 'play' && this.sim) {
-      const sim = this.sim;
-      this.acc += dt;
-      while (this.acc >= DT) {
-        sim.step(this.held || this.latched);
-        this.latched = false;
-        this.acc -= DT;
-        if (!sim.won) this.levelTime += DT;
-        for (const ev of sim.events) {
-          this.r.effect(ev, sim);
-          this.audio.play(ev.t, ev.v ?? 0);
-          if (ev.t === 'bossIntro') {
-            this.bossBanner = 3;
-            this.audio.setBoss(true);
-          }
-          if (ev.t === 'bossDead') this.audio.setBoss(false);
-          if (ev.t === 'respawn' && sim.boss) this.audio.setBoss(false);
-          if (ev.t === 'win') this.winTimer = 1.3;
+    if ((this.screen === 'play' || this.screen === 'pause') && this.run && this.chart) {
+      songT = this.audio.songTime();
+      if (this.screen === 'play') {
+        if (AUTOPLAY) {
+          const cues = this.chart.cues;
+          while (this.autoI < cues.length && cues[this.autoI].t <= songT) this.presses.push(cues[this.autoI++].t);
         }
-        sim.events.length = 0;
+        this.presses.sort((a, b) => a - b);
+        this.run.update(songT, this.presses);
+        this.presses = [];
+        this.handleEvents();
+        const drops = this.chart.drops;
+        while (this.dropI < drops.length && drops[this.dropI] <= songT) {
+          this.dropI++;
+          this.r.dropFlash = 0.9;
+          this.r.shake = 12;
+        }
+        if (songT > this.chart.duration + 0.4 && !this.run.dead) this.finish();
+        if (this.deathTimer > 0) {
+          this.deathTimer -= dt;
+          if (this.deathTimer <= 0) void this.start(this.track!, true);
+        }
       }
-      if (this.winTimer > 0) {
-        this.winTimer -= dt;
-        if (this.winTimer <= 0) this.finishLevel();
-      }
-      this.bannerT += dt;
-      this.bossBanner = Math.max(0, this.bossBanner - dt);
-      this.r.update(dt, sim, this.acc / DT);
-    } else if (this.screen === 'title' || this.screen === 'select') {
-      this.runDemo(dt);
-    } else {
-      this.r.update(dt, null, 0);
     }
-
-    this.draw();
+    this.comboPulse = Math.max(0, this.comboPulse - dt * 4);
+    this.r.update(dt, lv, this.screen === 'play' || this.screen === 'pause' ? this.run : null, this.chart, songT);
+    this.draw(songT);
     requestAnimationFrame((t) => this.frame(t));
   }
 
-  /** A tiny autopilot runs level 1 behind the menus. */
-  private demoAcc = 0;
-  private runDemo(dt: number): void {
-    const d = this.demo;
-    this.demoAcc += dt;
-    while (this.demoAcc >= DT) {
-      this.demoAcc -= DT;
-      const p = d.p;
-      // look ahead for danger: gap, spike or wall
-      const ahead = p.x + (p.dir > 0 ? 20 + 26 : -26);
-      const tx = Math.floor(ahead / TILE);
-      const ty = Math.floor((p.y + 24 + 4) / TILE);
-      const floor = d.tileSolid(tx, ty);
-      const wall = d.tileSolid(tx, ty - 1);
-      const spike = d.L.tiles[(ty - 1) * d.L.w + tx] === 7;
-      const want = p.grounded && (!floor || wall || spike);
-      d.step(want || (!p.grounded && p.vy < 0 && this.demoHold > 0));
-      this.demoHold = want ? 14 : Math.max(0, this.demoHold - 1);
-      d.events.length = 0;
-      if (d.dead || d.won || d.p.x > 60 * TILE) {
-        this.demo = new Sim(d.L);
-        this.r.snapCamera(this.demo);
-        return this.runDemo(0);
+  private handleEvents() {
+    const run = this.run!;
+    const r = this.r;
+    for (const ev of run.events) {
+      switch (ev.type) {
+        case 'grade':
+          r.grade(ev.grade as Grade, ev.x, ev.y, ev.combo ?? 0);
+          this.audio.sound(ev.grade!);
+          this.comboPulse = 1;
+          break;
+        case 'miss':
+          r.popup(ev.x, ev.y + 70, 'MISS', '#ff4d6d', true);
+          r.missFlash = 1;
+          r.shake = 10;
+          r.particles.burst(ev.x, ev.y + 12, { n: 20, color: ['#ff4d6d', '#fff'], speed: 220, size: 3, life: 0.5, shape: 'square' });
+          this.audio.muffle();
+          this.audio.sound('miss');
+          break;
+        case 'death': {
+          const progress = Math.max(0, Math.min(1, run.t / this.chart!.duration));
+          this.death = { progress, record: saveProgress(this.track!.id, this.diff, progress) };
+          this.deathTimer = 1.1;
+          r.missFlash = 1.4;
+          r.shake = 16;
+          r.particles.burst(ev.x, ev.y + 12, { n: 40, color: ['#ff9f43', '#ffd29a', '#ff4d6d', '#fff'], speed: 320, size: 3.5, life: 0.8, shape: 'square' });
+          r.particles.add({ x: ev.x, y: ev.y + 12, shape: 'ring', size: 14, life: 0.5, max: 0.5, color: '#fff' });
+          this.audio.muffle();
+          this.audio.fadeOut(0.5);
+          this.audio.sound('miss');
+          break;
+        }
+        case 'jump':
+        case 'orb':
+          r.squash = -0.3;
+          r.particles.burst(ev.x, ev.y + 2, { n: 8, color: [r.pal.neon, '#fff'], speed: 90, angle: -Math.PI / 2, spread: 2.4, size: 2.2, life: 0.35 });
+          break;
+        case 'land':
+          r.squash = 0.25;
+          r.particles.burst(ev.x, ev.y + 2, { n: 6, color: [r.pal.neon], speed: 80, angle: Math.PI / 2, spread: 2.6, size: 2, life: 0.3 });
+          break;
+        case 'pad':
+          r.dropFlash = Math.max(r.dropFlash, 0.5);
+          r.particles.burst(ev.x, ev.y + 4, { n: 30, color: [r.pal.accent, '#fff', r.pal.neon2], speed: 300, angle: Math.PI / 2, spread: 1.4, size: 3, life: 0.7, glow: true });
+          this.audio.sound('pad');
+          break;
+        case 'note':
+          r.particles.burst(ev.x, ev.y, { n: 6, color: [r.pal.neon, '#fff'], speed: 90, size: 2, life: 0.3, glow: true });
+          this.audio.sound('note');
+          break;
       }
     }
-    this.r.update(dt, this.demo, this.demoAcc / DT);
-  }
-  private demoHold = 0;
-
-  // ------------------------------------------------------------------ drawing
-
-  private draw() {
-    const r = this.r;
-    const ctx = r.ctx;
-    const dpr = r.dpr;
-    const W = this.canvas.width / dpr;
-    const H = this.canvas.height / dpr;
-    this.buttons = [];
-    this.hudButtons = [];
-
-    if (this.screen === 'title' || this.screen === 'select') {
-      r.render(this.demo, this.demoAcc / DT);
-    } else if (this.sim) {
-      r.render(this.sim, this.screen === 'play' ? this.acc / DT : 1);
-    }
-
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    switch (this.screen) {
-      case 'title':
-        this.drawTitle(ctx, W, H);
-        break;
-      case 'select':
-        this.drawSelect(ctx, W, H);
-        break;
-      case 'play':
-        this.drawHud(ctx, W, H);
-        break;
-      case 'pause':
-        this.drawHud(ctx, W, H);
-        this.drawPause(ctx, W, H);
-        break;
-      case 'complete':
-        this.drawComplete(ctx, W, H);
-        break;
-      case 'victory':
-        this.drawVictory(ctx, W, H);
-        break;
-    }
-    this.drawSoundButton(ctx, W);
-    if (this.screen !== 'play') this.drawButtons(ctx);
+    run.events.length = 0;
   }
 
-  private text(ctx: CanvasRenderingContext2D, s: string, x: number, y: number, size: number, color = '#fff', align: CanvasTextAlign = 'center', weight = 700, outline = true) {
+  // ---------------------------------------------------------------- drawing
+
+  private text(s: string, x: number, y: number, size: number, color = '#fff', align: CanvasTextAlign = 'center', weight = 800, glow = '') {
+    const ctx = this.r.ctx;
     ctx.font = `${weight} ${size}px ${FONT}`;
     ctx.textAlign = align;
     ctx.textBaseline = 'middle';
-    if (outline) {
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(3, size / 6);
-      ctx.strokeStyle = 'rgba(20,10,40,0.85)';
-      ctx.strokeText(s, x, y);
+    if (glow) {
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = size * 0.6;
     }
     ctx.fillStyle = color;
     ctx.fillText(s, x, y);
+    ctx.shadowBlur = 0;
   }
 
-  private panel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, alpha = 0.78) {
-    ctx.fillStyle = `rgba(18,12,40,${alpha})`;
+  private panel(x: number, y: number, w: number, h: number, a = 0.6, border = 'rgba(255,255,255,0.12)') {
+    const ctx = this.r.ctx;
+    ctx.fillStyle = `rgba(8,4,20,${a})`;
     ctx.beginPath();
-    ctx.roundRect(x, y, w, h, 18);
+    ctx.roundRect(x, y, w, h, 14);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1.5;
     ctx.stroke();
   }
 
-  private dim(ctx: CanvasRenderingContext2D, W: number, H: number, a = 0.45) {
-    ctx.fillStyle = `rgba(10,5,25,${a})`;
-    ctx.fillRect(0, 0, W, H);
-  }
-
-  private drawButtons(ctx: CanvasRenderingContext2D) {
-    this.buttons.forEach((b, i) => {
-      const focused = i === this.focus;
-      const hover = this.hit(b, this.mouse);
-      const lift = (focused || hover) && !b.locked ? -2 : 0;
-      ctx.save();
-      ctx.translate(0, lift);
-      ctx.fillStyle = b.locked ? 'rgba(60,55,80,0.85)' : b.primary ? '#ff8a2a' : 'rgba(255,255,255,0.12)';
-      ctx.beginPath();
-      ctx.roundRect(b.x, b.y, b.w, b.h, 14);
-      ctx.fill();
-      if (b.primary && !b.locked) {
-        ctx.fillStyle = 'rgba(255,255,255,0.18)';
-        ctx.beginPath();
-        ctx.roundRect(b.x + 4, b.y + 3, b.w - 8, b.h / 2 - 3, 10);
-        ctx.fill();
-      }
-      ctx.lineWidth = focused && !b.locked ? 3 : 2;
-      ctx.strokeStyle = focused && !b.locked ? '#ffe27a' : 'rgba(255,255,255,0.25)';
-      ctx.stroke();
-      if (b.icon) {
-        this.text(ctx, b.icon, b.x + b.w / 2, b.y + b.h / 2 - (b.sub ? 10 : 0), b.h * 0.42, b.locked ? '#8a85a0' : '#fff');
-      } else {
-        this.text(ctx, b.label, b.x + b.w / 2, b.y + b.h / 2 - (b.sub ? 9 : 0), Math.min(22, b.h * 0.4), b.locked ? '#8a85a0' : '#fff', 'center', 700, false);
-      }
-      if (b.sub) this.text(ctx, b.sub, b.x + b.w / 2, b.y + b.h / 2 + 14, 12, b.locked ? '#77728c' : '#ffe9c4', 'center', 500, false);
-      ctx.restore();
-    });
-  }
-
-  private drawSoundButton(ctx: CanvasRenderingContext2D, W: number) {
-    const s = 40;
-    const b: Button = { x: W - s - 14, y: 14, w: s, h: s, label: '', action: () => this.audio.toggleMute() };
-    this.hudButtons.push(b);
-    ctx.fillStyle = 'rgba(18,12,40,0.6)';
+  private button(id: string, x: number, y: number, w: number, h: number, label: string, action: () => void, primary = false, active = false) {
+    const ctx = this.r.ctx;
+    const hov = this.hit({ x, y, w, h, action, id });
+    this.buttons.push({ x, y, w, h, action, id });
+    const p = this.r.pal;
+    ctx.fillStyle = primary ? p.neon2 : active ? 'rgba(255,255,255,0.22)' : hov ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.07)';
     ctx.beginPath();
-    ctx.roundRect(b.x, b.y, s, s, 10);
+    ctx.roundRect(x, y, w, h, 12);
     ctx.fill();
+    ctx.strokeStyle = active || hov ? p.neon : 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = active ? 2.5 : 1.5;
+    ctx.stroke();
+    this.text(label, x + w / 2, y + h / 2 + 1, Math.min(18, h * 0.42), primary ? '#14061f' : '#fff', 'center', 800);
+  }
+
+  private draw(songT: number) {
+    const r = this.r;
+    const dpr = r.dpr;
+    r.draw(this.screen === 'play' || this.screen === 'pause' ? this.run : null, this.screen === 'menu' ? null : this.chart, songT);
+    const ctx = r.ctx;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const W = this.canvas.width / dpr;
+    const H = this.canvas.height / dpr;
+    this.buttons = [];
+    switch (this.screen) {
+      case 'menu':
+        this.drawMenu(W, H);
+        break;
+      case 'loading':
+        this.drawLoading(W, H);
+        break;
+      case 'play':
+        this.drawHud(W, H, songT);
+        break;
+      case 'pause':
+        this.drawHud(W, H, songT);
+        this.drawPause(W, H);
+        break;
+      case 'results':
+        this.drawResults(W, H);
+        break;
+    }
+    this.drawSoundButton(W);
+    if (this.dragging) {
+      ctx.fillStyle = 'rgba(10,0,30,0.7)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.setLineDash([12, 10]);
+      ctx.strokeStyle = r.pal.neon;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(30, 30, W - 60, H - 60);
+      ctx.setLineDash([]);
+      this.text('Отпусти файл — уровень построится под твой трек', W / 2, H / 2, 24, '#fff', 'center', 800, r.pal.neon);
+    }
+  }
+
+  private drawSoundButton(W: number) {
+    const ctx = this.r.ctx;
+    const x = W - 54;
+    const y = 14;
+    this.buttons.push({ x, y, w: 40, h: 40, action: () => this.audio.toggleMute(), id: 'mute' });
+    this.panel(x, y, 40, 40, 0.5);
     ctx.fillStyle = '#fff';
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 2;
-    const cx = b.x + 12;
-    const cy = b.y + s / 2;
+    const cx = x + 12;
+    const cy = y + 20;
     ctx.beginPath();
     ctx.moveTo(cx - 4, cy - 4);
     ctx.lineTo(cx, cy - 4);
@@ -413,301 +483,278 @@ export class Game {
     ctx.lineTo(cx - 4, cy + 4);
     ctx.closePath();
     ctx.fill();
+    ctx.beginPath();
     if (this.audio.muted) {
-      ctx.beginPath();
       ctx.moveTo(cx + 11, cy - 5);
       ctx.lineTo(cx + 19, cy + 5);
       ctx.moveTo(cx + 19, cy - 5);
       ctx.lineTo(cx + 11, cy + 5);
-      ctx.stroke();
     } else {
-      ctx.beginPath();
       ctx.arc(cx + 8, cy, 6, -0.9, 0.9);
-      ctx.stroke();
-      ctx.beginPath();
+      ctx.moveTo(cx + 8 + 11 * Math.cos(-0.9), cy + 11 * Math.sin(-0.9));
       ctx.arc(cx + 8, cy, 11, -0.9, 0.9);
-      ctx.stroke();
     }
+    ctx.stroke();
   }
 
-  private drawTitle(ctx: CanvasRenderingContext2D, W: number, H: number) {
-    this.dim(ctx, W, H, 0.25);
-    const t = this.r.time;
-    const big = Math.min(150, W / 5.2);
-    const y = H * 0.27;
-    // logo with bouncing letters
+  private drawLogo(x: number, y: number, size: number) {
+    const ctx = this.r.ctx;
     const word = 'ПРЫГ!';
-    ctx.font = `900 ${big}px ${FONT}`;
-    const widths = [...word].map((c) => ctx.measureText(c).width);
-    let x = W / 2 - widths.reduce((a, b) => a + b, 0) / 2;
-    [...word].forEach((c, i) => {
-      const by = y + Math.sin(t * 4 + i * 0.7) * big * 0.06;
+    ctx.font = `900 ${size}px ${FONT}`;
+    const ws = [...word].map((ch) => ctx.measureText(ch).width);
+    let cx = x - ws.reduce((a, b) => a + b, 0) / 2;
+    const bands = this.r.smoothBands;
+    [...word].forEach((ch, i) => {
+      const bounce = Math.max(this.r.beatPulse * 0.6, bands[4 + i * 6] ?? 0) * size * 0.12;
       ctx.save();
-      ctx.translate(x + widths[i] / 2, by);
-      ctx.rotate(Math.sin(t * 3 + i) * 0.05);
-      ctx.font = `900 ${big}px ${FONT}`;
+      ctx.translate(cx + ws[i] / 2, y - bounce);
+      ctx.font = `900 ${size}px ${FONT}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = big / 7;
-      ctx.strokeStyle = '#2a1350';
-      ctx.strokeText(c, 0, big * 0.06);
-      ctx.strokeText(c, 0, 0);
-      const g = ctx.createLinearGradient(0, -big / 2, 0, big / 2);
-      g.addColorStop(0, '#ffe27a');
-      g.addColorStop(0.5, '#ffaa3a');
-      g.addColorStop(1, '#ff5a3a');
+      ctx.shadowColor = this.r.pal.neon2;
+      ctx.shadowBlur = size * 0.3;
+      const g = ctx.createLinearGradient(0, -size / 2, 0, size / 2);
+      g.addColorStop(0, '#fff');
+      g.addColorStop(0.5, this.r.pal.neon);
+      g.addColorStop(1, this.r.pal.neon2);
       ctx.fillStyle = g;
-      ctx.fillText(c, 0, 0);
+      ctx.fillText(ch, 0, 0);
       ctx.restore();
-      x += widths[i];
+      cx += ws[i];
     });
-    this.text(ctx, 'Одна кнопка. Десять уровней. Один босс.', W / 2, y + big * 0.62, Math.min(24, W / 30), '#fff', 'center', 600);
-
-    const bw = Math.min(300, W - 40);
-    const by = H * 0.56;
-    const cont = Math.min(this.save.unlocked, LEVELS.length - 1);
-    this.buttons.push({
-      x: W / 2 - bw / 2,
-      y: by,
-      w: bw,
-      h: 58,
-      label: this.save.unlocked > 0 ? `Продолжить · уровень ${cont + 1}` : 'Играть',
-      primary: true,
-      action: () => this.startLevel(cont),
-    });
-    this.buttons.push({ x: W / 2 - bw / 2, y: by + 72, w: bw, h: 50, label: 'Выбор уровня', action: () => this.goSelect() });
-
-    const pulse = 0.6 + 0.4 * Math.sin(t * 3);
-    ctx.globalAlpha = pulse;
-    this.text(ctx, 'ПРОБЕЛ — прыжок  ·  удерживай — выше', W / 2, H - 70, 18, '#ffe9c4', 'center', 600);
-    ctx.globalAlpha = 1;
-    this.text(ctx, 'Можно и мышкой / тапом по экрану  ·  M — звук  ·  Esc — пауза', W / 2, H - 42, 13, 'rgba(255,255,255,0.75)', 'center', 500);
   }
 
-  private drawSelect(ctx: CanvasRenderingContext2D, W: number, H: number) {
-    this.dim(ctx, W, H, 0.5);
-    this.text(ctx, 'Выбор уровня', W / 2, 60, 38, '#ffe27a', 'center', 900);
-    const page = this.selectPage;
-    const count = Math.min(10, LEVELS.length - page * 10);
-    const cols = W < 640 ? 2 : 5;
-    const rows = Math.ceil(count / cols);
-    const gap = 14;
-    const cw = Math.min(170, (W - 40 - gap * (cols - 1)) / cols);
-    const ch = Math.min(130, (H - 220 - gap * (rows - 1)) / rows);
-    const gx = W / 2 - (cols * cw + (cols - 1) * gap) / 2;
-    const gy = 110;
-    for (let k = 0; k < count; k++) {
-      const i = page * 10 + k;
-      const def = LEVELS[i];
-      const locked = i > this.save.unlocked;
-      const best = this.save.best[i];
-      const c = k % cols;
-      const rr = Math.floor(k / cols);
-      const x = gx + c * (cw + gap);
-      const y = gy + rr * (ch + gap);
-      const total = parseLevel(def).coins.length;
-      this.buttons.push({
-        x,
-        y,
-        w: cw,
-        h: ch,
-        label: '',
-        locked,
-        action: () => this.startLevel(i),
-      });
-      // card art
-      const th = THEMES[def.theme];
-      const g = ctx.createLinearGradient(0, y, 0, y + ch);
-      g.addColorStop(0, th.sky[1]);
-      g.addColorStop(1, th.sky[2]);
+  private drawMenu(W: number, H: number) {
+    const ctx = this.r.ctx;
+    ctx.fillStyle = 'rgba(5,0,15,0.35)';
+    ctx.fillRect(0, 0, W, H);
+    const narrow = W < 760;
+    const logo = Math.min(110, W / 6);
+    this.drawLogo(W / 2, 18 + logo * 0.6, logo);
+    this.text('Ритм-раннер на одной кнопке. Прыгай в бит.', W / 2, 30 + logo * 1.2, Math.min(18, W / 34), 'rgba(255,255,255,0.85)', 'center', 600);
+
+    const top = 52 + logo * 1.35;
+    const listW = Math.min(620, W - 32);
+    const lx = W / 2 - listW / 2;
+    // mode
+    const mw = (listW - 8) / 2;
+    (['flow', 'hardcore'] as Mode[]).forEach((m, i) => {
+      const sub = m === 'flow' ? 'ошибки прощаются' : 'смерть — с самого начала';
+      this.button(`m${m}`, lx + i * (mw + 8), top, mw, 44, '', () => this.setMode(m), false, this.mode === m);
+      const col = m === 'hardcore' ? '#ff6b8b' : this.r.pal.neon;
+      this.text(MODE_NAMES[m], lx + i * (mw + 8) + mw / 2, top + 16, 16, this.mode === m ? col : '#fff', 'center', 900);
+      this.text(sub, lx + i * (mw + 8) + mw / 2, top + 33, 11, 'rgba(255,255,255,0.65)', 'center', 600);
+    });
+    // difficulty
+    const dw = (listW - 16) / 3;
+    const dy = top + 52;
+    DIFF_NAMES.forEach((name, i) => this.button(`d${i}`, lx + i * (dw + 8), dy, dw, 34, name, () => this.setDiff(i as Difficulty), false, this.diff === i));
+
+    // track list
+    const ly = dy + 46;
+    const bottomSpace = 118;
+    const listH = Math.max(120, H - ly - bottomSpace);
+    const rowH = 60;
+    const maxScroll = Math.max(0, this.tracks.length * (rowH + 8) - listH);
+    this.scroll = Math.min(this.scroll, maxScroll);
+    // keep the selection visible
+    const selTop = this.sel * (rowH + 8);
+    if (selTop - this.scroll < 0) this.scroll = selTop;
+    if (selTop + rowH - this.scroll > listH) this.scroll = selTop + rowH - listH;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(lx - 4, ly - 4, listW + 8, listH + 8);
+    ctx.clip();
+    if (!this.tracks.length) {
+      this.text('В папке playlist пока нет треков — загрузи свой ниже', W / 2, ly + 40, 16, '#fff', 'center', 600);
+    }
+    this.tracks.forEach((t, i) => {
+      const y = ly + i * (rowH + 8) - this.scroll;
+      if (y + rowH < ly - 4 || y > ly + listH + 4) return;
+      const selected = i === this.sel;
+      const b: Button = { x: lx, y: Math.max(y, ly), w: listW, h: Math.min(rowH, ly + listH - y), id: `t${i}`, action: () => (this.sel === i ? void this.start(t) : this.select(i)) };
+      this.buttons.push(b);
+      const hov = this.hit(b);
+      this.panel(lx, y, listW, rowH, selected ? 0.75 : hov ? 0.6 : 0.45, selected ? this.r.pal.neon : 'rgba(255,255,255,0.1)');
+      if (selected) {
+        ctx.fillStyle = this.r.pal.neon;
+        ctx.fillRect(lx, y + 10, 4, rowH - 20);
+      }
+      this.text(String(i + 1).padStart(2, '0'), lx + 30, y + rowH / 2, 18, selected ? this.r.pal.neon : 'rgba(255,255,255,0.4)', 'center', 900);
       ctx.save();
       ctx.beginPath();
-      ctx.roundRect(x, y, cw, ch, 14);
+      ctx.rect(lx + 52, y, listW - 52 - (narrow ? 70 : 140), rowH);
       ctx.clip();
-      ctx.fillStyle = g;
-      ctx.fillRect(x, y, cw, ch);
-      ctx.fillStyle = th.mid;
-      ctx.beginPath();
-      ctx.moveTo(x, y + ch);
-      for (let s = 0; s <= 8; s++) ctx.lineTo(x + (cw * s) / 8, y + ch * 0.72 - Math.sin(s * 1.7 + i) * ch * 0.08);
-      ctx.lineTo(x + cw, y + ch);
-      ctx.fill();
-      ctx.fillStyle = th.top;
-      ctx.fillRect(x, y + ch - 14, cw, 4);
-      ctx.fillStyle = th.ground;
-      ctx.fillRect(x, y + ch - 10, cw, 10);
-      if (locked) {
-        ctx.fillStyle = 'rgba(20,15,35,0.7)';
-        ctx.fillRect(x, y, cw, ch);
-      }
+      this.text(t.title, lx + 56, y + 23, 18, '#fff', 'left', 800);
+      this.text(t.artist || (t.file ? 'твой трек' : ''), lx + 56, y + 43, 13, 'rgba(255,255,255,0.6)', 'left', 600);
       ctx.restore();
-      const focused = this.buttons.length - 1 === this.focus;
-      ctx.lineWidth = focused && !locked ? 3 : 2;
-      ctx.strokeStyle = focused && !locked ? '#ffe27a' : 'rgba(255,255,255,0.3)';
-      ctx.beginPath();
-      ctx.roundRect(x, y, cw, ch, 14);
-      ctx.stroke();
-      const boss = !!def.boss;
-      this.text(ctx, locked ? '🔒' : String(i + 1), x + cw / 2, y + ch * 0.32, ch * 0.3, boss && !locked ? '#ff8c3a' : '#fff', 'center', 900);
-      this.text(ctx, boss ? `${def.name} ☠` : def.name, x + cw / 2, y + ch * 0.6, Math.min(14, cw / 11), '#fff', 'center', 700);
-      if (best) {
-        this.text(ctx, `◆ ${best.gems}/${total}   ⏱ ${fmtTime(best.time)}`, x + cw / 2, y + ch * 0.8, 11, '#bffcff', 'center', 600);
+      const best = getBest(t.id, this.diff, this.mode);
+      if (best && best.done === false) {
+        this.text(`${Math.floor((best.progress ?? 0) * 100)}%`, lx + listW - 34, y + rowH / 2, 18, '#ff6b8b', 'center', 900);
+      } else if (best) {
+        const rc = { S: '#ffe27a', A: '#7df9ff', B: '#7dff9a', C: '#ffb066', D: '#ff6b8b' }[best.rank] ?? '#fff';
+        this.text(best.rank, lx + listW - 28, y + rowH / 2, 26, rc, 'center', 900, rc);
+        if (!narrow) this.text(best.score.toLocaleString('ru'), lx + listW - 56, y + rowH / 2, 14, 'rgba(255,255,255,0.75)', 'right', 700);
+      } else if (selected) {
+        this.text('▶', lx + listW - 28, y + rowH / 2, 20, this.r.pal.neon, 'center', 900);
       }
-    }
-    const bw = 160;
-    this.buttons.push({ x: W / 2 - bw / 2, y: H - 80, w: bw, h: 46, label: 'Назад', action: () => this.goTitle() });
-    if (LEVELS.length > 10) {
-      if (page > 0) this.buttons.push({ x: W / 2 - bw / 2 - 70, y: H - 80, w: 54, h: 46, label: '◀', action: () => this.selectPage-- });
-      if ((page + 1) * 10 < LEVELS.length) this.buttons.push({ x: W / 2 + bw / 2 + 16, y: H - 80, w: 54, h: 46, label: '▶', action: () => this.selectPage++ });
-    }
-  }
-
-  private drawHud(ctx: CanvasRenderingContext2D, W: number, H: number) {
-    const sim = this.sim!;
-    const def = sim.L.def;
-    // level plate
-    const label = `${this.levelIndex + 1}. ${def.name}`;
-    ctx.font = `700 18px ${FONT}`;
-    const lw = ctx.measureText(label).width + 28;
-    this.panel(ctx, 14, 14, lw, 40, 0.6);
-    this.text(ctx, label, 28, 34, 18, '#fff', 'left', 700, false);
-    // stats
-    const gems = sim.coinsTaken.reduce((a, b) => a + b, 0);
-    const stats = `◆ ${gems}/${sim.L.coins.length}    ✖ ${sim.deaths}    ⏱ ${fmtTime(this.levelTime)}`;
-    ctx.font = `700 17px ${FONT}`;
-    const sw = ctx.measureText(stats).width + 28;
-    this.panel(ctx, 14, 60, sw, 36, 0.5);
-    this.text(ctx, stats, 28, 78, 17, '#bffcff', 'left', 700, false);
-
-    // pause button
-    const pb: Button = { x: W - 40 - 14 - 48, y: 14, w: 40, h: 40, label: '', action: () => this.pause() };
-    this.hudButtons.push(pb);
-    ctx.fillStyle = 'rgba(18,12,40,0.6)';
-    ctx.beginPath();
-    ctx.roundRect(pb.x, pb.y, 40, 40, 10);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(pb.x + 13, pb.y + 11, 5, 18);
-    ctx.fillRect(pb.x + 22, pb.y + 11, 5, 18);
-
-    // level intro banner
-    if (this.bannerT < 3) {
-      const a = Math.min(1, this.bannerT * 3, (3 - this.bannerT) * 2);
-      ctx.globalAlpha = a;
-      const by = H * 0.3 - (1 - Math.min(1, this.bannerT * 3)) * 30;
-      this.text(ctx, `Уровень ${this.levelIndex + 1}`, W / 2, by - 34, 24, '#ffe27a', 'center', 800);
-      this.text(ctx, def.name, W / 2, by + 10, Math.min(56, W / 12), '#fff', 'center', 900);
-      this.text(ctx, THEMES[def.theme].title, W / 2, by + 52, 16, 'rgba(255,255,255,0.8)', 'center', 600);
-      ctx.globalAlpha = 1;
-    }
-    // hint
-    if (def.hint && this.bannerT < 9) {
-      const a = Math.min(1, (this.bannerT - 0.5) * 2, (9 - this.bannerT) * 1.5);
-      if (a > 0) {
-        ctx.globalAlpha = a;
-        ctx.font = `600 17px ${FONT}`;
-        const tw = Math.min(W - 40, ctx.measureText(def.hint).width + 40);
-        this.panel(ctx, W / 2 - tw / 2, H - 76, tw, 46, 0.7);
-        this.text(ctx, def.hint, W / 2, H - 53, tw < ctx.measureText(def.hint).width + 40 ? 13 : 17, '#ffe9c4', 'center', 600, false);
-        ctx.globalAlpha = 1;
-      }
-    }
-    // boss
-    const b = sim.boss;
-    if (b && b.state !== 'idle' && b.state !== 'dead') {
-      const bw = Math.min(460, W - 40);
-      const x = W / 2 - bw / 2;
-      const y = H - 64;
-      this.panel(ctx, x - 10, y - 30, bw + 20, 56, 0.7);
-      this.text(ctx, b.cfg.name, W / 2, y - 12, 15, '#ffb066', 'center', 800, false);
-      ctx.fillStyle = '#2b1a20';
-      ctx.beginPath();
-      ctx.roundRect(x, y, bw, 14, 7);
-      ctx.fill();
-      const k = Math.max(0, b.hp / b.cfg.hp);
-      const g = ctx.createLinearGradient(x, 0, x + bw, 0);
-      g.addColorStop(0, '#ff3a3a');
-      g.addColorStop(1, '#ffb03a');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.roundRect(x, y, Math.max(0.01, bw * k), 14, 7);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-      ctx.lineWidth = 2;
-      for (let i = 1; i < b.cfg.hp; i++) {
-        ctx.beginPath();
-        ctx.moveTo(x + (bw * i) / b.cfg.hp, y);
-        ctx.lineTo(x + (bw * i) / b.cfg.hp, y + 14);
-        ctx.stroke();
-      }
-    }
-    if (this.bossBanner > 0 && b) {
-      const a = Math.min(1, this.bossBanner, (3 - this.bossBanner) * 3);
-      ctx.globalAlpha = a;
-      this.text(ctx, 'БОСС', W / 2, H * 0.28, 30, '#ff8c3a', 'center', 900);
-      this.text(ctx, b.cfg.name, W / 2, H * 0.28 + 46, Math.min(52, W / 12), '#fff', 'center', 900);
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  private drawPause(ctx: CanvasRenderingContext2D, W: number, H: number) {
-    this.dim(ctx, W, H, 0.55);
-    const pw = Math.min(360, W - 30);
-    const ph = 300;
-    const x = W / 2 - pw / 2;
-    const y = H / 2 - ph / 2;
-    this.panel(ctx, x, y, pw, ph);
-    this.text(ctx, 'Пауза', W / 2, y + 48, 40, '#ffe27a', 'center', 900);
-    const bw = pw - 60;
-    this.buttons.push({ x: W / 2 - bw / 2, y: y + 90, w: bw, h: 52, label: 'Продолжить', primary: true, action: () => this.resume() });
-    this.buttons.push({ x: W / 2 - bw / 2, y: y + 154, w: bw, h: 46, label: 'Начать заново', action: () => this.startLevel(this.levelIndex) });
-    this.buttons.push({ x: W / 2 - bw / 2, y: y + 212, w: bw, h: 46, label: 'В меню', action: () => this.goTitle() });
-  }
-
-  private drawComplete(ctx: CanvasRenderingContext2D, W: number, H: number) {
-    this.dim(ctx, W, H, 0.5);
-    const s = this.completeStats;
-    const pw = Math.min(440, W - 30);
-    const ph = 380;
-    const x = W / 2 - pw / 2;
-    const y = H / 2 - ph / 2;
-    this.panel(ctx, x, y, pw, ph);
-    this.text(ctx, 'Уровень пройден!', W / 2, y + 46, Math.min(36, pw / 12), '#ffe27a', 'center', 900);
-    this.text(ctx, LEVELS[this.levelIndex].name, W / 2, y + 84, 18, '#fff', 'center', 600);
-    const rows: [string, string][] = [
-      ['Время', fmtTime(s.time) + (s.record ? '  ★ рекорд' : '')],
-      ['Падений', String(s.deaths)],
-      ['Кристаллы', `${s.gems} / ${s.total}`],
-    ];
-    rows.forEach(([k, v], i) => {
-      this.text(ctx, k, x + 40, y + 130 + i * 36, 18, 'rgba(255,255,255,0.75)', 'left', 600, false);
-      this.text(ctx, v, x + pw - 40, y + 130 + i * 36, 20, '#bffcff', 'right', 800, false);
     });
-    const bw = pw - 60;
-    this.buttons.push({ x: W / 2 - bw / 2, y: y + 238, w: bw, h: 54, label: 'Дальше →', sub: 'пробел', primary: true, action: () => this.startLevel(this.levelIndex + 1) });
-    const hw = (bw - 12) / 2;
-    this.buttons.push({ x: W / 2 - bw / 2, y: y + 304, w: hw, h: 44, label: 'Заново', action: () => this.startLevel(this.levelIndex) });
-    this.buttons.push({ x: W / 2 - bw / 2 + hw + 12, y: y + 304, w: hw, h: 44, label: 'Меню', action: () => this.goTitle() });
+    ctx.restore();
+
+    const by = ly + listH + 14;
+    const half = (listW - 10) / 2;
+    if (this.tracks.length) this.button('play', lx, by, half, 46, '▶  Играть', () => void this.start(this.tracks[this.sel]), true);
+    this.button('upload', this.tracks.length ? lx + half + 10 : lx, by, this.tracks.length ? half : listW, 46, '＋ Свой трек (MP3)', () => this.fileInput.click());
+    this.text('Пробел / клик — прыжок  ·  ↑↓ трек  ·  ←→ сложность  ·  Tab режим  ·  можно перетащить MP3 в окно', W / 2, H - 22, 12, 'rgba(255,255,255,0.6)', 'center', 600);
   }
 
-  private drawVictory(ctx: CanvasRenderingContext2D, W: number, H: number) {
-    this.dim(ctx, W, H, 0.55);
-    const t = this.r.time;
-    if (Math.random() < 0.3) {
-      // confetti in world space near the camera
-      const r = this.r;
-      r.particles.add({ x: r.camX + Math.random() * r.viewW, y: r.camY - 10, vy: 80 + Math.random() * 60, vx: (Math.random() - 0.5) * 40, g: 60, size: 3, shape: 'square', color: ['#ffe27a', '#7df9ff', '#ff6b8b', '#7dff8a'][(Math.random() * 4) | 0], life: 5, max: 5 });
+  private drawLoading(W: number, H: number) {
+    const ctx = this.r.ctx;
+    ctx.fillStyle = 'rgba(5,0,15,0.55)';
+    ctx.fillRect(0, 0, W, H);
+    const t = this.track!;
+    this.text(t.title, W / 2, H / 2 - 60, Math.min(40, W / 14), '#fff', 'center', 900, this.r.pal.neon);
+    this.text(t.artist, W / 2, H / 2 - 24, 16, 'rgba(255,255,255,0.7)', 'center', 600);
+    if (this.loadError) {
+      this.text(this.loadError, W / 2, H / 2 + 30, 16, '#ff6b8b', 'center', 700);
+      this.button('back', W / 2 - 90, H / 2 + 60, 180, 44, 'Назад', () => this.toMenu());
+      return;
     }
-    const totalTime = Object.values(this.save.best).reduce((a, b) => a + b.time, 0);
-    const totalGems = Object.values(this.save.best).reduce((a, b) => a + b.gems, 0);
-    const allGems = LEVELS.reduce((a, d) => a + parseLevel(d).coins.length, 0);
-    this.text(ctx, 'ПОБЕДА!', W / 2, H * 0.24 + Math.sin(t * 3) * 6, Math.min(96, W / 7), '#ffe27a', 'center', 900);
-    this.text(ctx, 'Пламенный Страж повержен!', W / 2, H * 0.24 + 70, Math.min(26, W / 22), '#fff', 'center', 700);
-    this.text(ctx, `Лучшее время за все уровни: ${fmtTime(totalTime)}`, W / 2, H * 0.24 + 120, 18, '#bffcff', 'center', 600);
-    this.text(ctx, `Кристаллы: ${totalGems} / ${allGems}`, W / 2, H * 0.24 + 150, 18, '#bffcff', 'center', 600);
-    const bw = Math.min(300, W - 40);
-    this.buttons.push({ x: W / 2 - bw / 2, y: H * 0.24 + 200, w: bw, h: 54, label: 'В меню', primary: true, action: () => this.goTitle() });
-    this.buttons.push({ x: W / 2 - bw / 2, y: H * 0.24 + 266, w: bw, h: 46, label: 'Сразиться ещё раз', action: () => this.startLevel(this.levelIndex) });
+    const bw = Math.min(420, W - 60);
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.beginPath();
+    ctx.roundRect(W / 2 - bw / 2, H / 2 + 16, bw, 10, 5);
+    ctx.fill();
+    ctx.fillStyle = this.r.pal.neon;
+    ctx.shadowColor = this.r.pal.neon;
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.roundRect(W / 2 - bw / 2, H / 2 + 16, Math.max(10, bw * this.loadProgress), 10, 5);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    const phase = this.loadProgress < 0.1 ? 'Загружаю трек…' : this.loadProgress < 0.85 ? 'Слушаю бит…' : 'Строю уровень под музыку…';
+    this.text(phase, W / 2, H / 2 + 52, 15, 'rgba(255,255,255,0.75)', 'center', 600);
+  }
+
+  private drawHud(W: number, H: number, songT: number) {
+    const ctx = this.r.ctx;
+    const run = this.run!;
+    const chart = this.chart!;
+    const an = this.loaded!.analysis;
+    // progress bar = waveform of the song
+    const bx = 16;
+    const bw = W - 32 - 64;
+    const by = 16;
+    const bh = 30;
+    this.panel(bx - 4, by - 4, bw + 8, bh + 8, 0.45);
+    const prog = Math.max(0, Math.min(1, songT / chart.duration));
+    const ov = an.overview;
+    const step = bw / ov.length;
+    for (let i = 0; i < ov.length; i++) {
+      const hh = Math.max(1.5, ov[i] * bh * 0.9);
+      const done = i / ov.length < prog;
+      ctx.fillStyle = done ? this.r.pal.neon : 'rgba(255,255,255,0.22)';
+      ctx.fillRect(bx + i * step, by + bh / 2 - hh / 2, Math.max(1, step - 0.6), hh);
+    }
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(bx + bw * prog - 1, by - 2, 2, bh + 4);
+    // title + time
+    this.text(`${this.track!.title}${this.track!.artist ? ' — ' + this.track!.artist : ''}`, bx, by + bh + 20, 14, 'rgba(255,255,255,0.85)', 'left', 700);
+    this.text(`${fmt(Math.max(0, songT))} / ${fmt(chart.duration)}   ·   ${Math.round(60 / chart.beatDur)} BPM   ·   ${MODE_NAMES[this.mode]}, ${DIFF_NAMES[this.diff].toLowerCase()}`, bx, by + bh + 40, 12, 'rgba(255,255,255,0.55)', 'left', 600);
+    // score
+    this.text(run.score.toLocaleString('ru'), W - 20, by + bh + 26, 26, '#fff', 'right', 900, this.r.pal.neon);
+    this.text(`точность ${Math.round(run.accuracy * 100)}%`, W - 20, by + bh + 50, 12, 'rgba(255,255,255,0.6)', 'right', 600);
+    if (this.mode === 'hardcore') {
+      const best = getBest(this.track!.id, this.diff, 'hardcore');
+      const bp = best ? (best.done ? 100 : Math.floor((best.progress ?? 0) * 100)) : 0;
+      this.text(`ХАРДКОР · попытка ${this.attempts} · рекорд ${bp}%`, W - 20, by + bh + 70, 12, '#ff6b8b', 'right', 800);
+    }
+    if (run.dead) {
+      ctx.fillStyle = 'rgba(40,0,15,0.35)';
+      ctx.fillRect(0, 0, W, H);
+      const pct = Math.floor(this.death.progress * 100);
+      this.text(`${pct}%`, W / 2, H * 0.42, 96, '#fff', 'center', 900, '#ff4d6d');
+      this.text(this.death.record ? '★ Новый рекорд прохождения!' : 'Ещё раз — с самого начала', W / 2, H * 0.42 + 70, 18, this.death.record ? '#ffe27a' : 'rgba(255,255,255,0.85)', 'center', 800);
+    }
+    // combo
+    if (run.combo >= 2) {
+      const s = 1 + this.comboPulse * 0.25 + this.r.beatPulse * 0.06;
+      ctx.save();
+      ctx.translate(W / 2, by + bh + 46);
+      ctx.scale(s, s);
+      this.text(`${run.combo}`, 0, 0, 40, '#fff', 'center', 900, this.r.pal.neon2);
+      this.text('КОМБО', 0, 28, 12, this.r.pal.neon2, 'center', 800);
+      ctx.restore();
+    }
+    // count-in
+    if (songT < 0 && !run.dead) {
+      const n = Math.ceil(-songT / (LEAD / 3));
+      const frac = (-songT / (LEAD / 3)) % 1;
+      ctx.globalAlpha = Math.min(1, frac * 3);
+      this.text(n > 0 ? String(n) : '', W / 2, H * 0.42, 90 + (1 - frac) * 20, '#fff', 'center', 900, this.r.pal.neon);
+      ctx.globalAlpha = 1;
+      this.text('Прыгай на светящихся стрелках — когда кольцо сожмётся', W / 2, H * 0.42 + 80, 16, 'rgba(255,255,255,0.85)', 'center', 700);
+    }
+    this.buttons.push({ x: W - 100, y: 14, w: 40, h: 40, action: () => this.pause(), id: 'pause' });
+    this.panel(W - 100, 14, 40, 40, 0.5);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(W - 87, 25, 5, 18);
+    ctx.fillRect(W - 78, 25, 5, 18);
+    if (AUTOPLAY) this.text('AUTOPLAY', W / 2, H - 20, 12, '#ffe27a', 'center', 800);
+  }
+
+  private drawPause(W: number, H: number) {
+    const ctx = this.r.ctx;
+    ctx.fillStyle = 'rgba(5,0,15,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    const pw = Math.min(340, W - 30);
+    const x = W / 2 - pw / 2;
+    const y = H / 2 - 130;
+    this.panel(x, y, pw, 260, 0.8);
+    this.text('Пауза', W / 2, y + 44, 36, '#fff', 'center', 900, this.r.pal.neon);
+    this.button('resume', x + 24, y + 84, pw - 48, 48, 'Продолжить', () => this.resume(), true);
+    this.button('restart', x + 24, y + 142, pw - 48, 42, 'Заново', () => void this.start(this.track!, this.mode === 'hardcore'));
+    this.button('menu', x + 24, y + 194, pw - 48, 42, 'В меню', () => this.toMenu());
+  }
+
+  private drawResults(W: number, H: number) {
+    const ctx = this.r.ctx;
+    const res = this.result!;
+    const run = this.run!;
+    ctx.fillStyle = 'rgba(5,0,15,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    const pw = Math.min(480, W - 24);
+    const ph = 470;
+    const x = W / 2 - pw / 2;
+    const y = Math.max(10, H / 2 - ph / 2);
+    this.panel(x, y, pw, ph, 0.82);
+    this.text(this.track!.title, W / 2, y + 34, 22, '#fff', 'center', 800);
+    this.text(`${MODE_NAMES[this.mode]} · ${DIFF_NAMES[this.diff]}${this.mode === 'hardcore' ? ` · пройдено с попытки ${res.attempts}` : ''}`, W / 2, y + 58, 13, this.mode === 'hardcore' ? '#ff6b8b' : 'rgba(255,255,255,0.6)', 'center', 700);
+    const rc = { S: '#ffe27a', A: '#7df9ff', B: '#7dff9a', C: '#ffb066', D: '#ff6b8b' }[res.best.rank] ?? '#fff';
+    const s = 1 + this.r.beatPulse * 0.05;
+    ctx.save();
+    ctx.translate(x + 90, y + 150);
+    ctx.scale(s, s);
+    this.text(res.best.rank, 0, 0, 110, rc, 'center', 900, rc);
+    ctx.restore();
+    this.text(res.best.score.toLocaleString('ru'), x + pw - 30, y + 118, 34, '#fff', 'right', 900, this.r.pal.neon);
+    this.text(`точность ${Math.round(res.best.acc * 100)}%  ·  макс. комбо ${res.best.combo}`, x + pw - 30, y + 152, 13, 'rgba(255,255,255,0.75)', 'right', 600);
+    if (res.record) this.text('★ Новый рекорд!', x + pw - 30, y + 180, 15, '#ffe27a', 'right', 800);
+    const rows: [string, string, string][] = [
+      ['PERFECT', String(run.counts.PERFECT), '#7df9ff'],
+      ['GREAT', String(run.counts.GREAT), '#7dff9a'],
+      ['GOOD', String(run.counts.GOOD), '#ffe27a'],
+      ['MISS', String(run.counts.MISS), '#ff6b8b'],
+      ['Кристаллы', `${res.notes} / ${res.totalNotes}`, '#d0b8ff'],
+    ];
+    rows.forEach(([k, v, c], i) => {
+      const ry = y + 232 + i * 30;
+      this.text(k, x + 40, ry, 15, c, 'left', 800);
+      this.text(v, x + pw - 40, ry, 16, '#fff', 'right', 800);
+    });
+    const bw = (pw - 60) / 3;
+    this.button('again', x + 20, y + ph - 70, bw, 48, 'Ещё раз', () => void this.start(this.track!), true);
+    this.button('next', x + 30 + bw, y + ph - 70, bw, 48, 'Следующий', () => this.next());
+    this.button('menu', x + 40 + bw * 2, y + ph - 70, bw, 48, 'Меню', () => this.toMenu());
   }
 }

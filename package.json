@@ -1,5 +1,5 @@
 {
-  "name": "pryg-one-button-platformer",
+  "name": "pryg-rhythm-runner",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -10,9 +10,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "typecheck": "tsc --noEmit",
-    "solve": "node scripts/solve.ts",
-    "boss-test": "node scripts/boss-test.ts"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "7.0.2",
