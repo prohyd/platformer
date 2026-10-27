@@ -123,21 +123,29 @@ export async function analyze(buf: AudioBuffer, progress?: (p: number) => void):
   progress?.(0.8);
   await tick();
 
-  // ---- tempo by autocorrelation, with a preference for ~120 BPM
+  // ---- tempo by autocorrelation, with a preference for ~120 BPM.
+  // A real beat period repeats at 2, 3 and 4 periods too, while a wrong 3:2 guess
+  // (a common trap with syncopated music) only lines up every other time.
   const minLag = Math.floor((60 * fps) / 200);
   const maxLag = Math.ceil((60 * fps) / 60);
   let bestLag = minLag;
   let bestScore = -1;
-  const acf = new Float32Array(maxLag + 2);
-  for (let lag = minLag; lag <= maxLag + 1; lag++) {
+  const acf = new Float32Array(4 * maxLag + 6);
+  for (let lag = minLag; lag < acf.length; lag++) {
     let s = 0;
     for (let i = 0; i + lag < frames; i++) s += od[i] * od[i + lag];
-    acf[lag] = s / (frames - lag);
+    acf[lag] = s / Math.max(1, frames - lag);
   }
+  /** Autocorrelation at a fractional lag (best of the neighbours, beats are never perfectly even). */
+  const acfAt = (l: number) => {
+    const i = Math.round(l);
+    return Math.max(acf[i - 1] ?? 0, acf[i] ?? 0, acf[i + 1] ?? 0);
+  };
   for (let lag = minLag; lag <= maxLag; lag++) {
     const bpm = (60 * fps) / lag;
     const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.9, 2));
-    const sc = acf[lag] * w;
+    const comb = acf[lag] + 0.5 * acfAt(2 * lag) + 0.33 * acfAt(3 * lag) + 0.25 * acfAt(4 * lag);
+    const sc = comb * w;
     if (sc > bestScore) {
       bestScore = sc;
       bestLag = lag;
