@@ -74,7 +74,7 @@ export function buildChart(an: Analysis, diff: Difficulty, seed: number, mode: M
   const allowed = PATTERNS.filter(
     (p) => p.tier <= P.maxTier && (P.offbeat || !p.offbeat || bpu === 2) && p.chain <= P.chainMax && (P.ceilings || !p.ceilings),
   );
-  const sections: Section[] = an.sections?.length ? an.sections : [{ start: 0, end: n, energy: 0.5, intensity: 0.5, busy: 0.3, label: 0, drop: false }];
+  const sections: Section[] = an.sections?.length ? an.sections : [{ start: 0, end: n, energy: 0.5, intensity: 0.5, busy: 0.3, label: 0 }];
   const recent: Pattern[] = [];
   const byLabel = new Map<number, Picked[]>();
   let prevLabel = -1;
@@ -86,9 +86,12 @@ export function buildChart(an: Analysis, diff: Difficulty, seed: number, mode: M
     const end = Math.min(sec.end, n - 2 * bpu);
     if (i >= end) continue;
     const t0 = beats[i];
+    // a drop: this part is suddenly much louder than the one before
+    const D = CONFIG.drops;
+    const drop = si > 0 && sec.energy > D.minEnergy && sec.energy - sections[si - 1].energy > D.rise;
     const mul = P.portals ? portalSpeed(sec.intensity) : 1;
     b.setSpeed(Math.max(t0, b.readyT), mul);
-    b.sections.push({ t: t0, x: b.X(t0), intensity: sec.intensity, label: sec.label, drop: sec.drop });
+    b.sections.push({ t: t0, x: b.X(t0), intensity: sec.intensity, label: sec.label, drop });
 
     // favourite patterns of this part: parts that sound alike get the same style
     const styleIdx = Math.min(STYLES.length - 1, Math.floor(sec.intensity * 5.5 + ((sec.label * 7 + seed) % 3)));
@@ -119,7 +122,7 @@ export function buildChart(an: Analysis, diff: Difficulty, seed: number, mode: M
 
       if (t < firstT || loudness(an, i, i + 2 * bpu) < C.silence) {
         p = REST_PATTERN;
-      } else if (i === sec.start && sec.drop && left >= DROP_PATTERN.steps * bpu / 2 && b.drops.every((d) => t - d > 8 * b.beatDur)) {
+      } else if (i === sec.start && drop && left >= (DROP_PATTERN.steps * bpu) / 2 && b.drops.every((d) => t - d > D.cooldownBeats * b.beatDur)) {
         p = DROP_PATTERN;
         b.drops.push(t);
       } else if (replay && ri < replay.length && replay[ri].offset === offset && fits(b, replay[ri].pattern, left, P.maxSteps)) {

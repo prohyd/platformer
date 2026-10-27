@@ -15,8 +15,6 @@ export interface Section {
   busy: number;
   /** Parts that sound alike share a label (a chorus that comes back gets the same one). */
   label: number;
-  /** The music suddenly got much louder here (a drop). */
-  drop: boolean;
 }
 
 export interface BeatFeatures {
@@ -139,7 +137,6 @@ export function findSections(f: BeatFeatures, phase: number): Section[] {
       }
     }
     if (s.label < 0) s.label = labels++;
-    s.drop = k > 0 && s.energy - sections[k - 1].energy > 0.18 && s.energy > 0.55;
   });
   return sections;
 }
@@ -162,6 +159,5 @@ function makeSection(f: BeatFeatures, start: number, end: number, label: number)
     intensity: 0.5,
     busy: sliceMean(f.offbeat, s),
     label,
-    drop: false,
   };
 }
