@@ -50,6 +50,7 @@ export class Run {
   constructor(c: Chart, startT: number) {
     this.c = c;
     this.scorer = new Scorer(c.cues);
+    this.scorer.skipBefore(startT);
     this.t = startT;
     this.x = xAt(c.speeds, startT);
     this.y = this.floorAt(this.x - HALF, this.x + HALF) ?? 0;

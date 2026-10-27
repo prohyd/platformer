@@ -102,8 +102,8 @@ export class AudioEngine {
 
   // ---------------------------------------------------------------- song
 
-  /** Start the song so that song time 0 happens after `lead` seconds. */
-  play(buffer: AudioBuffer, lead = 2) {
+  /** Start the song at song time `from`, after `lead` seconds of silence. */
+  play(buffer: AudioBuffer, lead = 2, from = 0) {
     this.unlock();
     this.stop();
     const c = this.ctx!;
@@ -111,8 +111,8 @@ export class AudioEngine {
     const src = c.createBufferSource();
     src.buffer = buffer;
     src.connect(this.music);
-    this.startAt = c.currentTime + lead;
-    src.start(this.startAt);
+    this.startAt = c.currentTime + lead - from;
+    src.start(c.currentTime + lead, from);
     this.source = src;
     this.filter.frequency.cancelScheduledValues(c.currentTime);
     this.filter.frequency.setValueAtTime(20000, c.currentTime);

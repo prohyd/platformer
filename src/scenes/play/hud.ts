@@ -3,7 +3,7 @@
 import type { Analysis } from '../../audio/analyze.ts';
 import type { AudioEngine } from '../../audio/AudioEngine.ts';
 import type { Track } from '../../data/playlist.ts';
-import { DANGER, GOLD } from '../../render/palette.ts';
+import { DANGER, GOLD, PRACTICE } from '../../render/palette.ts';
 import type { Run } from '../../rhythm/Run.ts';
 import type { ChartStats } from '../../rhythm/stats.ts';
 import { DIFF_NAMES, MODE_NAMES, type Chart, type Difficulty, type Mode } from '../../rhythm/types.ts';
@@ -23,7 +23,7 @@ export interface HudState {
   /** Best hardcore reach for this song, 0..100. */
   bestPercent: number;
   /** Set after a hardcore death. */
-  death: { progress: number; record: boolean } | null;
+  death: { progress: number; record: boolean; practice: boolean } | null;
   /** Length of the count-in, s. */
   leadIn: number;
   /** 0..1, makes the combo counter jump. */
@@ -34,6 +34,10 @@ export interface HudState {
   stats: ChartStats;
   /** Clicks per second the level asks for right now. */
   cps: number;
+  /** Song time when the run starts (0, or a practice checkpoint). */
+  startT: number;
+  practice: boolean;
+  checkpoints: number;
 }
 
 export function drawHud(ui: Ui, s: HudState) {
@@ -41,7 +45,7 @@ export function drawHud(ui: Ui, s: HudState) {
   drawScore(ui, s);
   if (s.death) drawDeath(ui, s.death);
   drawCombo(ui, s);
-  if (s.songT < 0 && !s.run.dead) drawCountIn(ui, s);
+  if (s.songT < s.startT && !s.run.dead) drawCountIn(ui, s);
   if (s.autoplay) ui.text('AUTOPLAY', ui.W / 2, ui.H - 20, 12, GOLD, 'center', 800);
 }
 
@@ -74,7 +78,8 @@ function drawScore(ui: Ui, s: HudState) {
   const sc = s.run.scorer;
   ui.text(sc.score.toLocaleString('ru'), ui.W - 20, y + 26, 26, '#fff', 'right', 900, ui.pal.neon);
   ui.text(`точность ${Math.round(sc.liveAccuracy * 100)}%`, ui.W - 20, y + 50, 12, 'rgba(255,255,255,0.6)', 'right', 600);
-  if (s.mode === 'hardcore') ui.text(`ХАРДКОР · попытка ${s.attempts} · рекорд ${s.bestPercent}%`, ui.W - 20, y + 70, 12, DANGER, 'right', 800);
+  if (s.practice) ui.text(`ПРАКТИКА · чекпоинтов ${s.checkpoints} · попытка ${s.attempts}`, ui.W - 20, y + 70, 12, PRACTICE, 'right', 800);
+  else if (s.mode === 'hardcore') ui.text(`ХАРДКОР · попытка ${s.attempts} · рекорд ${s.bestPercent}%`, ui.W - 20, y + 70, 12, DANGER, 'right', 800);
 }
 
 function drawCombo(ui: Ui, s: HudState) {
@@ -92,8 +97,9 @@ function drawCombo(ui: Ui, s: HudState) {
 
 function drawCountIn(ui: Ui, s: HudState) {
   const third = s.leadIn / 3;
-  const n = Math.ceil(-s.songT / third);
-  const frac = (-s.songT / third) % 1;
+  const left = s.startT - s.songT;
+  const n = Math.ceil(left / third);
+  const frac = (left / third) % 1;
   ui.ctx.globalAlpha = Math.min(1, frac * 3);
   ui.text(n > 0 ? String(n) : '', ui.W / 2, ui.H * 0.42, 90 + (1 - frac) * 20, '#fff', 'center', 900, ui.pal.neon);
   ui.ctx.globalAlpha = 1;
@@ -103,10 +109,10 @@ function drawCountIn(ui: Ui, s: HudState) {
 }
 
 /** Hardcore: how far you got. */
-function drawDeath(ui: Ui, death: { progress: number; record: boolean }) {
-  ui.dim(0.35, '40,0,15');
-  ui.text(`${Math.floor(death.progress * 100)}%`, ui.W / 2, ui.H * 0.42, 96, '#fff', 'center', 900, '#ff4d6d');
-  const msg = death.record ? '★ Новый рекорд прохождения!' : 'Ещё раз — с самого начала';
+function drawDeath(ui: Ui, death: { progress: number; record: boolean; practice: boolean }) {
+  ui.dim(0.35, death.practice ? '0,30,15' : '40,0,15');
+  ui.text(`${Math.floor(death.progress * 100)}%`, ui.W / 2, ui.H * 0.42, 96, '#fff', 'center', 900, death.practice ? PRACTICE : '#ff4d6d');
+  const msg = death.practice ? 'Практика: продолжаем с чекпоинта' : death.record ? '★ Новый рекорд прохождения!' : 'Ещё раз — с самого начала';
   ui.text(msg, ui.W / 2, ui.H * 0.42 + 70, 18, death.record ? GOLD : 'rgba(255,255,255,0.85)', 'center', 800);
 }
 
@@ -114,18 +120,25 @@ export interface PauseActions {
   resume(): void;
   restart(): void;
   menu(): void;
+  /** Hardcore only: practice mode switch. */
+  practice?: { on: boolean; toggle(): void };
 }
 
 export function drawPauseMenu(ui: Ui, audio: AudioEngine, a: PauseActions) {
   ui.dim(0.6);
   const pw = Math.min(360, ui.W - 30);
   const x = ui.W / 2 - pw / 2;
-  const y = Math.max(8, ui.H / 2 - 205);
+  const extra = a.practice ? 52 : 0;
+  const y = Math.max(8, ui.H / 2 - 205 - extra / 2);
   const bw = pw - 48;
-  ui.panel(x, y, pw, 410, 0.85);
+  ui.panel(x, y, pw, 410 + extra, 0.85);
   ui.text('Пауза', ui.W / 2, y + 44, 36, '#fff', 'center', 900, ui.pal.neon);
   ui.button({ x: x + 24, y: y + 84, w: bw, h: 48 }, 'Продолжить', a.resume, { primary: true });
   ui.button({ x: x + 24, y: y + 142, w: bw, h: 42 }, 'Заново', a.restart);
   ui.button({ x: x + 24, y: y + 194, w: bw, h: 42 }, 'В меню', a.menu);
-  volumeControls(ui, audio, x + 24, y + 262, bw);
+  if (a.practice) {
+    const p = a.practice;
+    ui.button({ x: x + 24, y: y + 246, w: bw, h: 42 }, p.on ? '◆ Практика: вкл (выйти — с начала)' : '◇ Практика с чекпоинтами', p.toggle, { active: p.on });
+  }
+  volumeControls(ui, audio, x + 24, y + 262 + extra, bw);
 }

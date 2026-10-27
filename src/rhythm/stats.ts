@@ -19,11 +19,11 @@ export const PEAK_WINDOW = 3;
 
 /** Difficulty names by "effective CPS" (the average of mean and peak CPS). */
 const RATINGS: [number, string][] = [
-  [1.2, 'Легко'],
-  [1.8, 'Нормально'],
-  [2.4, 'Сложно'],
-  [3.0, 'Очень сложно'],
-  [3.6, 'Безумие'],
+  [1.3, 'Легко'],
+  [2.0, 'Нормально'],
+  [2.7, 'Сложно'],
+  [3.4, 'Очень сложно'],
+  [4.2, 'Безумие'],
   [Infinity, 'Демон'],
 ];
 
@@ -37,7 +37,7 @@ export function chartStats(c: Chart): ChartStats {
   const avgCps = ts.length / Math.max(1, c.duration);
   const peakCps = peak / PEAK_WINDOW;
   // hardcore forgives less, so the same clicks are harder there
-  const eff = (avgCps + peakCps) / 2 + (c.mode === 'hardcore' ? 0.4 : 0);
+  const eff = (avgCps + peakCps) / 2 + (c.mode === 'hardcore' ? 0.3 : 0);
   return {
     clicks: ts.length,
     avgCps,

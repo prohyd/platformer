@@ -4,7 +4,7 @@ import { xAt } from '../../rhythm/speed.ts';
 import type { Chart } from '../../rhythm/types.ts';
 import type { Camera } from '../Camera.ts';
 import type { MusicPulse } from '../MusicPulse.ts';
-import type { Palette } from '../palette.ts';
+import { PRACTICE, type Palette } from '../palette.ts';
 
 /** Everything a world drawing function needs. */
 export interface WorldDrawContext {
@@ -113,6 +113,27 @@ function drawFloors({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, son
       ctx.fillRect(c.endX + 14, i * 20, 14, 20);
     }
   }
+}
+
+/** Practice checkpoints: green diamonds standing on the floor. */
+export function drawCheckpoints({ ctx, cam, pulse }: WorldDrawContext, cps: { x: number; y: number }[]) {
+  ctx.save();
+  ctx.fillStyle = PRACTICE;
+  ctx.shadowColor = PRACTICE;
+  ctx.shadowBlur = 12 + 8 * pulse.beatPulse;
+  for (const c of cps) {
+    if (!cam.visible(c.x - 20, c.x + 20)) continue;
+    const cy = c.y + 34;
+    ctx.beginPath();
+    ctx.moveTo(c.x, cy + 12);
+    ctx.lineTo(c.x + 8, cy);
+    ctx.lineTo(c.x, cy - 12);
+    ctx.lineTo(c.x - 8, cy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(c.x - 1, c.y, 2, 22);
+  }
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------- hints

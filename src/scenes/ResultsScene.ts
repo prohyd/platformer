@@ -21,6 +21,8 @@ export interface ResultsData {
   difficulty: Difficulty;
   attempts: number;
   stats: ChartStats;
+  /** Finished in hardcore practice: no record is saved. */
+  practice?: boolean;
 }
 
 export class ResultsScene implements Scene {
@@ -72,7 +74,7 @@ export class ResultsScene implements Scene {
     const y = Math.max(10, H / 2 - ph / 2);
     ui.panel(x, y, pw, ph, 0.82);
     ui.text(track.title, W / 2, y + 34, 22, '#fff', 'center', 800);
-    const sub = `${MODE_NAMES[mode]} · ${DIFF_NAMES[difficulty]}${mode === 'hardcore' ? ` · пройдено с попытки ${attempts}` : ''}`;
+    const sub = `${MODE_NAMES[mode]} · ${DIFF_NAMES[difficulty]}${this.r.practice ? ' · практика (без рекорда)' : mode === 'hardcore' ? ` · пройдено с попытки ${attempts}` : ''}`;
     ui.text(sub, W / 2, y + 58, 13, mode === 'hardcore' ? DANGER : 'rgba(255,255,255,0.6)', 'center', 700);
 
     // big rank letter, pulsing with the beat

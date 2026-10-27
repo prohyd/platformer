@@ -7,7 +7,7 @@ import { applyWorldTransform, Camera, project, toScreen } from './Camera.ts';
 import { Effects } from './Effects.ts';
 import { Background } from './layers/Background.ts';
 import { drawHero, drawTrail } from './layers/hero.ts';
-import { drawIdleFloor, drawLevel, type WorldDrawContext } from './layers/world.ts';
+import { drawCheckpoints, drawIdleFloor, drawLevel, type WorldDrawContext } from './layers/world.ts';
 import { MusicPulse } from './MusicPulse.ts';
 import { palette, type Palette } from './palette.ts';
 
@@ -16,6 +16,8 @@ export interface WorldView {
   run: Run | null;
   chart: Chart | null;
   songT: number;
+  /** Practice checkpoints to draw. */
+  checkpoints?: { x: number; y: number }[];
 }
 
 export class Renderer {
@@ -76,6 +78,7 @@ export class Renderer {
     applyWorldTransform(ctx, proj);
     const dc: WorldDrawContext = { ctx, cam, pal, pulse, time: this.time };
     if (view.chart) drawLevel(dc, view.chart, view.songT);
+    if (view.checkpoints) drawCheckpoints(dc, view.checkpoints);
     else drawIdleFloor(dc);
 
     const run = view.run;

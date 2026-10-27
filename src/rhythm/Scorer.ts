@@ -50,6 +50,11 @@ export class Scorer {
     return { cue: best, grade };
   }
 
+  /** Start in the middle of the song (practice checkpoint): earlier cues are not counted at all. */
+  skipBefore(t: number) {
+    while (this.cueI < this.cues.length && this.cues[this.cueI].t < t - 0.01) this.cues[this.cueI++].judged = true;
+  }
+
   /** Cues that are long gone were survived without a press: they cost nothing. */
   expire(now: number) {
     while (this.cueI < this.cues.length && this.cues[this.cueI].t < now - J.window) {

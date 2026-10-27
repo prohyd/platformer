@@ -32,3 +32,5 @@ export const GRADE_COLORS: Record<Grade, string> = { PERFECT: '#7df9ff', GREAT: 
 export const RANK_COLORS: Record<Rank, string> = { S: '#ffe27a', A: '#7df9ff', B: '#7dff9a', C: '#ffb066', D: '#ff6b8b' };
 export const DANGER = '#ff6b8b';
 export const GOLD = '#ffe27a';
+/** Practice mode and its checkpoints. */
+export const PRACTICE = '#5dff9d';
