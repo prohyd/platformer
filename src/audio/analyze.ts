@@ -1,5 +1,6 @@
 // Offline music analysis: onset envelope -> tempo -> beat tracking -> per-beat features.
 import { fft } from './fft.ts';
+import { findBarPhase, findSections, type Section } from './structure.ts';
 
 export interface Analysis {
   duration: number;
@@ -13,8 +14,16 @@ export interface Analysis {
   kick: number[];
   offbeat: number[];
   energy: number[];
+  /** Loudness of the bass, the middle and the highs on each beat, 0..1. */
+  low: number[];
+  mid: number[];
+  high: number[];
   /** Energy smoothed over ~2 bars. */
   smooth: number[];
+  /** Which beat (0..3) starts the bars. */
+  barPhase: number;
+  /** Parts of the song (intro, verse, chorus…), in order, covering all beats. */
+  sections: Section[];
   /** Coarse loudness curve for the progress bar. */
   overview: number[];
 }
@@ -74,6 +83,10 @@ export async function analyze(buf: AudioBuffer, progress?: (p: number) => void):
   const flux = new Float32Array(frames);
   const lowFlux = new Float32Array(frames);
   const rms = new Float32Array(frames);
+  const bandLow = new Float32Array(frames);
+  const bandMid = new Float32Array(frames);
+  const bandHigh = new Float32Array(frames);
+  const midEnd = Math.round(2000 / binHz);
 
   for (let f = 0; f < frames; f++) {
     const off = f * HOP;
@@ -88,8 +101,15 @@ export async function analyze(buf: AudioBuffer, progress?: (p: number) => void):
     fft(re, im);
     let fl = 0;
     let lo = 0;
+    let bl = 0;
+    let bm = 0;
+    let bh = 0;
     for (let k = 1; k <= highEnd; k++) {
-      const m = Math.log1p(100 * Math.hypot(re[k], im[k]));
+      const mag = Math.hypot(re[k], im[k]);
+      if (k < lowEnd) bl += mag;
+      else if (k < midEnd) bm += mag;
+      else bh += mag;
+      const m = Math.log1p(100 * mag);
       const d = m - prev[k];
       prev[k] = m;
       if (d > 0) {
@@ -97,6 +117,9 @@ export async function analyze(buf: AudioBuffer, progress?: (p: number) => void):
         if (k < lowEnd) lo += d * 4;
       }
     }
+    bandLow[f] = bl;
+    bandMid[f] = bm;
+    bandHigh[f] = bh;
     flux[f] = fl;
     lowFlux[f] = lo;
     if (f % 600 === 0) {
@@ -223,17 +246,31 @@ export async function analyze(buf: AudioBuffer, progress?: (p: number) => void):
   const kick: number[] = [];
   const offbeat: number[] = [];
   const energy: number[] = [];
+  const low: number[] = [];
+  const mid: number[] = [];
+  const high: number[] = [];
   for (let i = 0; i < beats.length; i++) {
     const t = beats[i];
     const next = beats[i + 1] ?? t + beatDur;
     onset.push(peak(od, t));
     kick.push(peak(lod, t));
     offbeat.push(peak(od, (t + next) / 2));
-    const f0 = Math.max(0, frameAt(t));
+    const f0 = Math.max(0, Math.min(frames - 1, frameAt(t)));
     const f1 = Math.min(frames, Math.max(f0 + 1, frameAt(next)));
     let e = 0;
-    for (let f = f0; f < f1; f++) e += rms[f];
+    let bl = 0;
+    let bm = 0;
+    let bh = 0;
+    for (let f = f0; f < f1; f++) {
+      e += rms[f];
+      bl += bandLow[f];
+      bm += bandMid[f];
+      bh += bandHigh[f];
+    }
     energy.push(e / (f1 - f0));
+    low.push(bl / (f1 - f0));
+    mid.push(bm / (f1 - f0));
+    high.push(bh / (f1 - f0));
   }
   const energyN = normalise(energy, 0.97);
   const smooth = energyN.map((_, i) => {
@@ -257,16 +294,25 @@ export async function analyze(buf: AudioBuffer, progress?: (p: number) => void):
     overview.push(m);
   }
   progress?.(1);
+  const features = {
+    onset: normalise(onset),
+    kick: normalise(kick),
+    offbeat: normalise(offbeat),
+    energy: energyN,
+    low: normalise(low, 0.97),
+    mid: normalise(mid, 0.97),
+    high: normalise(high, 0.97),
+  };
+  const barPhase = findBarPhase(features);
   return {
     duration,
     bpm: 60 / beatDur,
     beatDur,
     beats,
-    onset: normalise(onset),
-    kick: normalise(kick),
-    offbeat: normalise(offbeat),
-    energy: energyN,
+    ...features,
     smooth,
+    barPhase,
+    sections: findSections(features, barPhase),
     overview: normalise(overview, 0.99),
   };
 }
