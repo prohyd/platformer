@@ -30,6 +30,11 @@ export class TrackLibrary {
     return t;
   }
 
+  /** The analysis of a track that was already loaded, if any. */
+  analysisOf(t: Track) {
+    return this.cache.get(t.id)?.analysis;
+  }
+
   indexOf(t: Track) {
     return this.tracks.indexOf(t);
   }

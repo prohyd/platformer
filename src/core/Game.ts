@@ -75,6 +75,8 @@ export class Game {
   }
 
   toMenu() {
+    // practice is for one sitting with one song
+    this.settings.practice = false;
     this.go(new MenuScene(this));
   }
 

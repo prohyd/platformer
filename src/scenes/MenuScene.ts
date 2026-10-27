@@ -8,6 +8,8 @@ import { DANGER, RANK_COLORS } from '../render/palette.ts';
 import type { WorldView } from '../render/Renderer.ts';
 import { DIFF_NAMES, MODE_NAMES, type Difficulty, type Mode } from '../rhythm/types.ts';
 import type { Rank } from '../rhythm/Scorer.ts';
+import { buildChart, hashString } from '../rhythm/generator/buildChart.ts';
+import { chartStats } from '../rhythm/stats.ts';
 import type { Ui } from '../ui/Ui.ts';
 import { drawLogo, gearButton, volumeControls } from '../ui/widgets.ts';
 
@@ -19,6 +21,8 @@ export class MenuScene implements Scene {
   private scroll = 0;
   /** The selection the list was last scrolled to (scroll follows the selection only when it changes). */
   private scrolledTo = -1;
+  /** Level ratings of tracks that were already played, by track + mode + difficulty. */
+  private readonly ratings = new Map<string, string>();
   private showVolume = false;
 
   constructor(game: Game) {
@@ -185,7 +189,8 @@ export class MenuScene implements Scene {
     ctx.rect(lx + 52, y, listW - 52 - (narrow ? 70 : 140), ROW_H);
     ctx.clip();
     ui.text(t.title, lx + 56, y + 23, 18, '#fff', 'left', 800);
-    ui.text(t.artist || (t.file ? 'твой трек' : ''), lx + 56, y + 43, 13, 'rgba(255,255,255,0.6)', 'left', 600);
+    const rating = this.ratingOf(t, mode, difficulty);
+    ui.text(`${t.artist || (t.file ? 'твой трек' : '')}${rating ? `  ·  ${rating}` : ''}`, lx + 56, y + 43, 13, 'rgba(255,255,255,0.6)', 'left', 600);
     ctx.restore();
 
     // best result on the right
@@ -200,6 +205,20 @@ export class MenuScene implements Scene {
     } else if (isSel) {
       ui.text('▶', lx + listW - 28, cy, 20, ui.pal.neon, 'center', 900);
     }
+  }
+
+  /** "Сложно · 1.8 клик/с" for a track whose music is already analysed (it was played this visit). */
+  private ratingOf(t: Track, mode: Mode, diff: Difficulty) {
+    const an = this.game.library.analysisOf(t);
+    if (!an) return '';
+    const key = `${t.id}#${mode}#${diff}`;
+    let r = this.ratings.get(key);
+    if (r === undefined) {
+      const st = chartStats(buildChart(an, diff, hashString(t.id), mode));
+      r = `${st.rating} · ${st.avgCps.toFixed(1)} клик/с`;
+      this.ratings.set(key, r);
+    }
+    return r;
   }
 
   private drawBottomButtons(ui: Ui, lx: number, by: number, listW: number) {
