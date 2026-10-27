@@ -17,6 +17,8 @@ const ROW_GAP = 8;
 export class MenuScene implements Scene {
   private readonly game: Game;
   private scroll = 0;
+  /** The selection the list was last scrolled to (scroll follows the selection only when it changes). */
+  private scrolledTo = -1;
   private showVolume = false;
 
   constructor(game: Game) {
@@ -143,12 +145,15 @@ export class MenuScene implements Scene {
   private drawTrackList(ui: Ui, lx: number, ly: number, listW: number, listH: number) {
     const ctx = ui.ctx;
     const sel = this.game.settings.selected;
-    // keep the selection visible
+    // bring a newly selected track into view; otherwise the wheel scrolls freely
+    if (this.scrolledTo !== sel) {
+      this.scrolledTo = sel;
+      const selTop = sel * (ROW_H + ROW_GAP);
+      if (selTop - this.scroll < 0) this.scroll = selTop;
+      if (selTop + ROW_H - this.scroll > listH) this.scroll = selTop + ROW_H - listH;
+    }
     const maxScroll = Math.max(0, this.tracks.length * (ROW_H + ROW_GAP) - listH);
     this.scroll = Math.min(this.scroll, maxScroll);
-    const selTop = sel * (ROW_H + ROW_GAP);
-    if (selTop - this.scroll < 0) this.scroll = selTop;
-    if (selTop + ROW_H - this.scroll > listH) this.scroll = selTop + ROW_H - listH;
 
     ctx.save();
     ctx.beginPath();

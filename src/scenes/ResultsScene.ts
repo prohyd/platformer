@@ -26,6 +26,8 @@ export interface ResultsData {
 export class ResultsScene implements Scene {
   private readonly game: Game;
   private readonly r: ResultsData;
+  /** Keys are ignored for a moment, so a jump pressed at the very end does not restart the song. */
+  private lock = 0.8;
 
   constructor(game: Game, data: ResultsData) {
     this.game = game;
@@ -44,7 +46,9 @@ export class ResultsScene implements Scene {
     this.game.play(t);
   }
 
-  update() {}
+  update(dt: number) {
+    this.lock = Math.max(0, this.lock - dt);
+  }
 
   /** The finished level stays in the background. */
   view(): WorldView {
@@ -52,6 +56,7 @@ export class ResultsScene implements Scene {
   }
 
   onCommand(cmd: Command) {
+    if (this.lock > 0) return;
     if (cmd === 'primary' || cmd === 'confirm') this.again();
     else if (cmd === 'back') this.game.toMenu();
     else if (cmd === 'right') this.next();
