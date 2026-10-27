@@ -5,6 +5,7 @@ import type { AudioEngine } from '../../audio/AudioEngine.ts';
 import type { Track } from '../../data/playlist.ts';
 import { DANGER, GOLD } from '../../render/palette.ts';
 import type { Run } from '../../rhythm/Run.ts';
+import type { ChartStats } from '../../rhythm/stats.ts';
 import { DIFF_NAMES, MODE_NAMES, type Chart, type Difficulty, type Mode } from '../../rhythm/types.ts';
 import type { Ui } from '../../ui/Ui.ts';
 import { formatTime, volumeControls } from '../../ui/widgets.ts';
@@ -29,6 +30,10 @@ export interface HudState {
   comboPulse: number;
   beatPulse: number;
   autoplay: boolean;
+  /** Clicks per second of the whole level. */
+  stats: ChartStats;
+  /** Clicks per second the level asks for right now. */
+  cps: number;
 }
 
 export function drawHud(ui: Ui, s: HudState) {
@@ -60,7 +65,7 @@ function drawProgress(ui: Ui, s: HudState) {
   ctx.fillRect(bx + bw * prog - 1, by - 2, 2, bh + 4);
   const t = s.track;
   ui.text(`${t.title}${t.artist ? ' — ' + t.artist : ''}`, bx, by + bh + 20, 14, 'rgba(255,255,255,0.85)', 'left', 700);
-  const info = `${formatTime(Math.max(0, s.songT))} / ${formatTime(s.chart.duration)}   ·   ${Math.round(60 / s.chart.beatDur)} BPM   ·   ${MODE_NAMES[s.mode]}, ${DIFF_NAMES[s.difficulty].toLowerCase()}`;
+  const info = `${formatTime(Math.max(0, s.songT))} / ${formatTime(s.chart.duration)}   ·   ${Math.round(60 / s.chart.beatDur)} BPM   ·   ${MODE_NAMES[s.mode]}, ${DIFF_NAMES[s.difficulty].toLowerCase()}   ·   ${s.cps.toFixed(1)} клик/с`;
   ui.text(info, bx, by + bh + 40, 12, 'rgba(255,255,255,0.55)', 'left', 600);
 }
 
@@ -93,6 +98,8 @@ function drawCountIn(ui: Ui, s: HudState) {
   ui.text(n > 0 ? String(n) : '', ui.W / 2, ui.H * 0.42, 90 + (1 - frac) * 20, '#fff', 'center', 900, ui.pal.neon);
   ui.ctx.globalAlpha = 1;
   ui.text('Прыгай на светящихся стрелках — когда кольцо сожмётся', ui.W / 2, ui.H * 0.42 + 80, 16, 'rgba(255,255,255,0.85)', 'center', 700);
+  const st = s.stats;
+  ui.text(`Уровень: ${st.rating}  ·  ${st.clicks} нажатий  ·  в среднем ${st.avgCps.toFixed(1)}, в пике ${st.peakCps.toFixed(1)} клик/с`, ui.W / 2, ui.H * 0.42 + 106, 13, 'rgba(255,255,255,0.6)', 'center', 700);
 }
 
 /** Hardcore: how far you got. */

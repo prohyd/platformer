@@ -25,6 +25,8 @@ export class Renderer {
   readonly pulse = new MusicPulse();
   readonly fx = new Effects();
   pal: Palette = palette(200);
+  /** Hue the palette is sliding to (colour changes on new parts of a song). */
+  private hueTarget = 200;
   private readonly background = new Background();
   /** Seconds since start. */
   time = 0;
@@ -42,11 +44,19 @@ export class Renderer {
   /** A new colour scheme and skyline (one per song). */
   setPalette(p: Palette, seed: number) {
     this.pal = p;
+    this.hueTarget = p.hue;
     this.background.generateCity(seed);
+  }
+
+  /** Slide the colours to another hue (like a colour trigger in Geometry Dash). */
+  shiftHue(hue: number) {
+    this.hueTarget = hue;
   }
 
   update(dt: number, lv: Levels, view: WorldView) {
     this.time += dt;
+    const dh = this.hueTarget - this.pal.hue;
+    if (Math.abs(dh) > 0.5) this.pal = palette(this.pal.hue + dh * Math.min(1, dt * 4));
     this.pulse.update(dt, lv, view.chart ? view.chart.beats : null, view.songT);
     this.fx.update(dt);
     this.camera.update(dt, view.run, this.pulse);

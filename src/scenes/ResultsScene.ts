@@ -7,6 +7,7 @@ import type { Best } from '../data/records.ts';
 import { DANGER, GOLD, GRADE_COLORS, RANK_COLORS } from '../render/palette.ts';
 import type { WorldView } from '../render/Renderer.ts';
 import type { Rank, Scorer } from '../rhythm/Scorer.ts';
+import type { ChartStats } from '../rhythm/stats.ts';
 import { DIFF_NAMES, MODE_NAMES, type Chart, type Difficulty, type Mode } from '../rhythm/types.ts';
 import type { Ui } from '../ui/Ui.ts';
 
@@ -19,6 +20,7 @@ export interface ResultsData {
   mode: Mode;
   difficulty: Difficulty;
   attempts: number;
+  stats: ChartStats;
 }
 
 export class ResultsScene implements Scene {
@@ -57,10 +59,10 @@ export class ResultsScene implements Scene {
 
   drawUi(ui: Ui) {
     const { W, H } = ui;
-    const { track, scorer, best, record, mode, difficulty, attempts, chart } = this.r;
+    const { track, scorer, best, record, mode, difficulty, attempts, chart, stats } = this.r;
     ui.dim(0.6);
     const pw = Math.min(480, W - 24);
-    const ph = 470;
+    const ph = 500;
     const x = W / 2 - pw / 2;
     const y = Math.max(10, H / 2 - ph / 2);
     ui.panel(x, y, pw, ph, 0.82);
@@ -87,6 +89,7 @@ export class ResultsScene implements Scene {
       ['GOOD', String(scorer.counts.GOOD), GRADE_COLORS.GOOD],
       ['MISS', String(scorer.counts.MISS), DANGER],
       ['Кристаллы', `${scorer.notesTaken} / ${chart.notes.length}`, '#d0b8ff'],
+      [`Уровень: ${stats.rating}`, `${stats.avgCps.toFixed(1)} · пик ${stats.peakCps.toFixed(1)} клик/с`, '#9fe8ff'],
     ];
     rows.forEach(([label, value, color], i) => {
       const ry = y + 232 + i * 30;

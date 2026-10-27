@@ -10,12 +10,16 @@ import { records } from '../data/records.ts';
 import type { WorldView } from '../render/Renderer.ts';
 import { buildChart, hashString } from '../rhythm/generator/buildChart.ts';
 import { Run } from '../rhythm/Run.ts';
+import { chartStats, cpsAround, type ChartStats } from '../rhythm/stats.ts';
 import type { Chart, Difficulty, Mode } from '../rhythm/types.ts';
 import type { Ui } from '../ui/Ui.ts';
 import { pauseButton } from '../ui/widgets.ts';
 import { FEEDBACK, type FeedbackTargets } from './play/feedback.ts';
 import { drawHud, drawPauseMenu } from './play/hud.ts';
 import { ResultsScene } from './ResultsScene.ts';
+
+/** Colour shifts for the parts of a song, by part label (parts that sound alike look alike). */
+const SECTION_HUES = [0, 40, -35, 80, -70, 120, 160];
 
 /** Add ?autoplay to the address and the game plays itself (handy to preview a level). */
 const AUTOPLAY = new URLSearchParams(location.search).has('autoplay');
@@ -30,12 +34,15 @@ export class PlayScene implements Scene {
   private readonly leadIn: number;
   readonly chart: Chart;
   readonly run: Run;
+  readonly stats: ChartStats;
+  private readonly baseHue: number;
 
   private paused = false;
   private songT = 0;
   /** Song times of presses waiting to be fed to the run. */
   private presses: number[] = [];
   private nextDrop = 0;
+  private nextSection = 0;
   private nextAutoCue = 0;
   private comboPulse = 0;
   /** Hardcore: seconds until the restart after a death (-1 = alive). */
@@ -53,6 +60,8 @@ export class PlayScene implements Scene {
     this.chart = buildChart(loaded.analysis, this.difficulty, hashString(track.id), this.mode);
     this.leadIn = attempts > 1 ? CONFIG.timing.restartLeadIn : CONFIG.timing.leadIn;
     this.run = new Run(this.chart, -this.leadIn);
+    this.stats = chartStats(this.chart);
+    this.baseHue = game.renderer.pal.hue;
     this.feedback = {
       fx: game.renderer.fx,
       audio: game.audio,
@@ -114,6 +123,7 @@ export class PlayScene implements Scene {
     this.presses = [];
     this.handleEvents();
     this.checkDrops();
+    this.checkSections();
 
     if (this.songT > this.chart.duration + 0.4 && !this.run.dead) return this.finish();
     if (this.deathTimer > 0) {
@@ -146,6 +156,15 @@ export class PlayScene implements Scene {
     }
   }
 
+  /** A new part of the song: the colours slide to its own hue. */
+  private checkSections() {
+    const secs = this.chart.sections;
+    while (this.nextSection < secs.length && secs[this.nextSection].t <= this.songT) {
+      const sec = secs[this.nextSection++];
+      this.game.renderer.shiftHue(this.baseHue + SECTION_HUES[sec.label % SECTION_HUES.length]);
+    }
+  }
+
   private onDeath() {
     const progress = Math.max(0, Math.min(1, this.run.t / this.chart.duration));
     this.death = { progress, record: records.saveProgress(this.track.id, this.difficulty, progress) };
@@ -166,6 +185,7 @@ export class PlayScene implements Scene {
         mode: this.mode,
         difficulty: this.difficulty,
         attempts: this.attempts,
+        stats: this.stats,
       }),
     );
   }
@@ -192,6 +212,8 @@ export class PlayScene implements Scene {
       comboPulse: this.comboPulse,
       beatPulse: this.game.renderer.pulse.beatPulse,
       autoplay: AUTOPLAY,
+      stats: this.stats,
+      cps: cpsAround(this.chart, this.songT),
     });
     pauseButton(ui, () => this.pause());
     if (this.paused) {
