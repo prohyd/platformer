@@ -28,7 +28,7 @@ export interface LevelParams {
   rest: number;
   /** Сколько ступенек вверх можно набрать. */
   maxSteps: number;
-  /** Запас по краям пропасти. Меньше = нужна точнее. */
+  /** Запас по краям пропасти, в секундах: насколько можно ошибиться с прыжком через неё. */
   pitMargin: number;
   /** Ширина шипов. Больше = нужна точнее. */
   spikeW: number;
@@ -36,9 +36,9 @@ export interface LevelParams {
   speedMul: number;
   /** Насколько физика прощает неточность. */
   tolerance: {
-    /** Как далеко по горизонтали можно промахнуться мимо кольца. */
-    orbX: number;
-    /** Как далеко по вертикали можно промахнуться мимо кольца. */
+    /** На сколько секунд можно ошибиться с нажатием на кольцо (раньше или позже). */
+    orb: number;
+    /** Как далеко по вертикали можно промахнуться мимо кольца (сверх того, что набегает из-за ошибки во времени). */
     orbY: number;
     /** «Койот-тайм»: сколько можно прыгнуть уже сорвавшись с края. */
     coyote: number;
@@ -130,35 +130,35 @@ export const CONFIG = {
     flow: [
       {
         cps: [0.25, 1.1], maxTier: 1, offbeat: false, chainMax: 0, ceilings: false, portals: false, rest: 2,
-        maxSteps: 3, pitMargin: 26, spikeW: 26, speedMul: 1,
-        tolerance: { orbX: 44, orbY: 95, coyote: 0.07, buffer: 0.12 },
+        maxSteps: 3, pitMargin: 0.085, spikeW: 26, speedMul: 1,
+        tolerance: { orb: 0.15, orbY: 60, coyote: 0.07, buffer: 0.12 },
       },
       {
         cps: [0.5, 2.1], maxTier: 2, offbeat: false, chainMax: 2, ceilings: false, portals: true, rest: 0,
-        maxSteps: 3, pitMargin: 26, spikeW: 26, speedMul: 1,
-        tolerance: { orbX: 44, orbY: 95, coyote: 0.07, buffer: 0.12 },
+        maxSteps: 3, pitMargin: 0.085, spikeW: 26, speedMul: 1,
+        tolerance: { orb: 0.15, orbY: 60, coyote: 0.07, buffer: 0.12 },
       },
       {
         cps: [0.8, 3.0], maxTier: 3, offbeat: true, chainMax: 4, ceilings: false, portals: true, rest: 0,
-        maxSteps: 3, pitMargin: 24, spikeW: 28, speedMul: 1,
-        tolerance: { orbX: 44, orbY: 95, coyote: 0.07, buffer: 0.12 },
+        maxSteps: 3, pitMargin: 0.08, spikeW: 28, speedMul: 1,
+        tolerance: { orb: 0.15, orbY: 60, coyote: 0.07, buffer: 0.12 },
       },
     ],
     hardcore: [
       {
         cps: [0.7, 2.6], maxTier: 3, offbeat: true, chainMax: 3, ceilings: true, portals: true, rest: 0,
-        maxSteps: 4, pitMargin: 12, spikeW: 36, speedMul: 1.12,
-        tolerance: { orbX: 34, orbY: 60, coyote: 0.05, buffer: 0.09 },
+        maxSteps: 4, pitMargin: 0.055, spikeW: 36, speedMul: 1.12,
+        tolerance: { orb: 0.12, orbY: 40, coyote: 0.05, buffer: 0.09 },
       },
       {
         cps: [1.0, 3.6], maxTier: 4, offbeat: true, chainMax: 5, ceilings: true, portals: true, rest: 0,
-        maxSteps: 4, pitMargin: 9, spikeW: 38, speedMul: 1.16,
-        tolerance: { orbX: 31, orbY: 52, coyote: 0.04, buffer: 0.085 },
+        maxSteps: 4, pitMargin: 0.047, spikeW: 38, speedMul: 1.16,
+        tolerance: { orb: 0.11, orbY: 36, coyote: 0.04, buffer: 0.085 },
       },
       {
         cps: [1.4, 4.8], maxTier: 4, offbeat: true, chainMax: 7, ceilings: true, portals: true, rest: 0,
-        maxSteps: 4, pitMargin: 7, spikeW: 40, speedMul: 1.2,
-        tolerance: { orbX: 29, orbY: 48, coyote: 0.035, buffer: 0.08 },
+        maxSteps: 4, pitMargin: 0.04, spikeW: 40, speedMul: 1.2,
+        tolerance: { orb: 0.1, orbY: 32, coyote: 0.035, buffer: 0.08 },
       },
     ],
   } satisfies Record<'flow' | 'hardcore', LevelParams[]>,

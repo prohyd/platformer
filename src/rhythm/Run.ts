@@ -4,7 +4,7 @@
 import { CONFIG } from '../config.ts';
 import { CEIL_H, HALF, PH, SPIKE_H } from './geometry.ts';
 import { Scorer, type Grade } from './Scorer.ts';
-import { xAt } from './speed.ts';
+import { speedAt, xAt } from './speed.ts';
 import type { Chart, Cue, Orb, Pit } from './types.ts';
 
 export type { Grade } from './Scorer.ts';
@@ -20,6 +20,8 @@ export interface RunEvent {
 /** Physics sub-step: small enough that nothing is ever skipped. */
 const SUB = 1 / 240;
 const GHOST_TIME = CONFIG.timing.ghostTime;
+/** The most a jump is stretched or squeezed to land on the beat, s. */
+const MAX_FIX = 0.1;
 
 export class Run {
   readonly c: Chart;
@@ -89,8 +91,7 @@ export class Run {
 
   private press(time: number) {
     if (this.grounded || this.coyote > 0) {
-      this.jump(this.c.v0, 'jump');
-      this.grade(time, 'jump');
+      this.groundJump(time);
       return;
     }
     if (this.tryOrb(time)) return;
@@ -99,24 +100,49 @@ export class Run {
 
   private tryOrb(time: number) {
     const tol = this.c.tol;
+    const speed = speedAt(this.c.speeds, this.t);
+    const reach = tol.orb * speed;
     // the nearest orb wins: in fast chains the next orb is already within reach
     let best: Orb | null = null;
     for (const o of this.c.orbs) {
-      if (o.x - this.x > tol.orbX) break;
-      if (o.used || this.x - o.x > tol.orbX) continue;
-      if (Math.abs(o.y - (this.y + PH / 2)) > tol.orbY) continue;
+      if (o.x - this.x > reach) break;
+      if (o.used || this.x - o.x > reach) continue;
+      // where the runner will be when passing the orb; on a steep path a slightly early
+      // jump arrives a bit higher or lower, which is a timing error, not a miss
+      const dt = (o.x - this.x) / speed;
+      const yThen = this.y + PH / 2 + this.vy * dt - (this.c.g / 2) * dt * dt;
+      if (Math.abs(o.y - yThen) > tol.orbY + Math.abs(this.vy) * tol.orb * 0.5) continue;
       if (!best || Math.abs(o.x - this.x) < Math.abs(best.x - this.x)) best = o;
     }
     if (best) {
       const o = best;
       o.used = true;
-      // the orb pulls you to its centre, so timing errors never pile up along a chain
-      this.y = o.y - PH / 2;
-      this.jump(o.v, 'orb');
+      // the orb puts you back on the planned path (in height and in time),
+      // so timing errors never pile up along a chain
+      const late = this.t - o.t;
+      this.y = o.y - PH / 2 + o.v * late - (this.c.g / 2) * late * late;
+      this.jump(o.v - this.c.g * late, 'orb');
       this.grade(time, 'orb');
       return true;
     }
     return false;
+  }
+
+  /**
+   * A jump from the ground. When it answers a cue, it lands exactly when the planned jump
+   * would have: a slightly late jump is a bit lower, an early one a bit higher. So a small
+   * timing error never carries over into the next jumps of a fast sequence.
+   */
+  private groundJump(pressT: number) {
+    const res = this.scorer.judge(pressT, 'jump');
+    const c = this.c;
+    let v = c.v0;
+    if (res) {
+      const late = Math.max(-MAX_FIX, Math.min(MAX_FIX, this.t - res.cue.t));
+      v = (c.g * (c.airT - late)) / 2;
+    }
+    this.jump(v, 'jump');
+    if (res) this.events.push({ type: 'grade', x: res.cue.x, y: res.cue.y, grade: res.grade, combo: this.scorer.combo });
   }
 
   private jump(v: number, type: 'jump' | 'orb' | 'pad') {
@@ -201,8 +227,7 @@ export class Run {
       this.events.push({ type: 'land', x: this.x, y: this.y });
       if (this.buffer >= 0 && this.t - this.buffer < c.tol.buffer) {
         const bt = this.buffer;
-        this.jump(c.v0, 'jump');
-        this.grade(bt, 'jump');
+        this.groundJump(bt);
       }
     }
     return pit;

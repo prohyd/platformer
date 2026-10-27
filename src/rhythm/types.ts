@@ -98,7 +98,8 @@ export interface Cue {
 
 /** How forgiving the physics are. */
 export interface Tolerance {
-  orbX: number;
+  /** Orb timing window, s. */
+  orb: number;
   orbY: number;
   coyote: number;
   buffer: number;

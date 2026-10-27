@@ -266,7 +266,8 @@ export function placePattern(b: ChartBuilder, p: Pattern, t0: number): number {
   const cur: Cursor = { t: t0, k: 0 };
   const h = b.half;
   const T = b.airT;
-  const margin = b.P.pitMargin;
+  // the pit margin is a time: the same leeway at any speed
+  const margin = b.P.pitMargin * b.curSpeed;
   let ready = t0;
   const stepT = (k: number) => t0 + k * h;
   for (const tok of p.tokens) {
@@ -345,7 +346,8 @@ function placeJump(b: ChartBuilder, what: GroundJump, ts: number, xs: number, ma
       return ts + T;
     case 'U':
       arcGem(b, ts, y0, b.v0, T * 0.45);
-      b.setY(b.X(ts + T * 0.72), y0 + STEP);
+      // the wall comes early in the arc, so a jump that is a bit early still clears it
+      b.setY(b.X(ts + T * 0.62), y0 + STEP);
       return ts + T * 0.86;
     case 'W': {
       // from y0 down to y0 - STEP: 4u - 4u² = -STEP/H → u ≈ 1.11
@@ -381,7 +383,8 @@ function placeAir(b: ChartBuilder, tok: Extract<Token, { kind: 'air' }>, ts: num
   if (tok.orbs.length) arcGem(b, from.t, from.y, from.v, (landT - from.t) / 2);
   else arcGem(b, ts, y0, from.v, (landT - ts) / 2);
   const x0 = tok.open === 'jump' ? xs + margin : xs + 36;
-  const x1 = b.X(landT) - margin;
+  // a step up must not stick out into the arc: keep its edge close to the landing
+  const x1 = b.X(landT) - (tok.dy > 0 ? Math.min(margin, 0.1 * T * b.curSpeed) : margin);
   b.pit(x0, x1);
   if (tok.dy) b.setY(x1, y0 + tok.dy * STEP);
   return landT;

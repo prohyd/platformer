@@ -4,6 +4,8 @@
 //
 //   node tools/sim.ts                     synthetic songs (different tempos and moods)
 //   node tools/sim.ts song.pcm …          raw mono 16-bit PCM at 22050 Hz (dumped from the browser)
+//   node tools/sim.ts --human [files]     also lets a human-like bot (presses off by ±25 ms) play
+//                                         and lists the patterns where it fails most often
 //
 // Runs on plain Node (22.18+ / 24), no build step: the rhythm code does not touch the DOM.
 import { readFileSync } from 'node:fs';
@@ -60,25 +62,36 @@ function synthSong(bpm: number, seed: number, seconds = 120) {
 
 const MODES: Mode[] = ['flow', 'hardcore'];
 
-/** Plays the chart like the autoplay bot; returns how many mistakes happened. */
-function autoplay(chart: Chart) {
+/** Normal noise with standard deviation sd. */
+function gauss(rand: () => number, sd: number) {
+  return sd * Math.sqrt(-2 * Math.log(rand() || 1e-9)) * Math.cos(2 * Math.PI * rand());
+}
+
+/** Plays the chart like the autoplay bot (or a human with timing error `sd`); returns the mistakes. */
+function autoplay(chart: Chart, sd = 0, seed = 1) {
+  let s = seed;
+  const rand = () => ((s = (s * 1103515245 + 12345) >>> 0) / 4294967296);
   const run = new Run(chart, -1);
-  const cues = chart.cues;
+  const times = chart.cues.map((c) => c.t + (sd ? gauss(rand, sd) : 0)).sort((a, b) => a - b);
   let ci = 0;
   let misses = 0;
   let death = -1;
+  const missAt: number[] = [];
   for (let t = -1; t < chart.duration + 0.5; t += 1 / 60) {
     const presses: number[] = [];
-    while (ci < cues.length && cues[ci].t <= t) presses.push(cues[ci++].t);
+    while (ci < times.length && times[ci] <= t) presses.push(times[ci++]);
     run.update(t, presses);
     for (const e of run.events) {
-      if (e.type === 'miss') misses++;
+      if (e.type === 'miss') {
+        misses++;
+        missAt.push(run.t);
+      }
       if (e.type === 'death') death = run.t;
     }
     run.events.length = 0;
     if (run.dead) break;
   }
-  return { misses, death, judged: run.scorer.counts };
+  return { misses, death, missAt, judged: run.scorer.counts };
 }
 
 async function check(name: string, an: Analysis) {
@@ -98,10 +111,52 @@ async function check(name: string, an: Analysis) {
       );
     }
   }
+  if (HUMAN) human(an);
   return bad;
 }
 
-const files = process.argv.slice(2);
+/** Fails of the human-like bot per pattern name: [fails, times the pattern was played]. */
+const blame = new Map<string, [number, number]>();
+const HUMAN_SD = Number(process.env.SD ?? 0.025);
+const TRIES = 8;
+
+/** A human-like bot plays each level a few times: how far does it get, which patterns kill it. */
+function human(an: Analysis) {
+  for (const mode of MODES) {
+    for (const diff of [0, 1, 2] as Difficulty[]) {
+      let reach = 0;
+      let misses = 0;
+      let passed = 0;
+      for (let k = 0; k < TRIES; k++) {
+        const chart = buildChart(an, diff, 12345, mode);
+        const pats = chart.patterns ?? [];
+        const res = autoplay(chart, HUMAN_SD, 1000 + k * 77);
+        const fails = res.death >= 0 ? [res.death] : res.missAt;
+        const end = res.death >= 0 ? res.death : chart.duration;
+        reach += end / chart.duration;
+        misses += res.missAt.length;
+        if (res.death < 0 && !res.missAt.length) passed++;
+        for (const p of pats) {
+          if (p.t > end) break;
+          const e = blame.get(p.name) ?? [0, 0];
+          e[1]++;
+          blame.set(p.name, e);
+        }
+        for (const ft of fails) {
+          // the pattern that was playing when it went wrong
+          let at = pats[0];
+          for (const p of pats) if (p.t <= ft + 0.05) at = p;
+          if (at) blame.get(at.name)![0]++;
+        }
+      }
+      const r = mode === 'hardcore' ? `reach ${((reach / TRIES) * 100).toFixed(0)}%` : `misses ${(misses / TRIES).toFixed(1)}`;
+      console.log(`    human ${mode.padEnd(8)} ${diff}  ${r}  clean ${passed}/${TRIES}`);
+    }
+  }
+}
+
+const HUMAN = process.argv.includes('--human');
+const files = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 let bad = 0;
 if (files.length) {
   for (const f of files) bad += await check(f.split(/[\\/]/).pop()!, await analyze(bufferOf(loadPcm(f), SR)));
@@ -109,6 +164,14 @@ if (files.length) {
   for (const [bpm, seed] of [[84, 1], [100, 2], [120, 3], [138, 4], [160, 5], [174, 6]]) {
     bad += await check(`synth ${bpm}`, await analyze(bufferOf(synthSong(bpm, seed), SR)));
   }
+}
+if (HUMAN) {
+  console.log('\nPatterns where the human-like bot fails most (fails / plays):');
+  [...blame.entries()]
+    .filter(([, [f]]) => f > 0)
+    .sort((a, b) => b[1][0] / b[1][1] - a[1][0] / a[1][1])
+    .slice(0, 25)
+    .forEach(([name, [f, n]]) => console.log(`  ${(f / n).toFixed(2)}  ${f}/${n}  ${name}`));
 }
 console.log(bad ? `\n${bad} level(s) FAILED` : '\nall levels passed');
 process.exit(bad ? 1 : 0);
