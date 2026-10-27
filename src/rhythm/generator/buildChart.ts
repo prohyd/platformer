@@ -21,6 +21,8 @@ export function hashString(s: string) {
 }
 
 const C = CONFIG.conductor;
+/** Two bars, in beats. */
+const PHRASE = 8;
 
 /** Favourite kinds of patterns, from calm to wild. */
 const STYLES: Family[][] = [
@@ -98,19 +100,32 @@ export function buildChart(an: Analysis, diff: Difficulty, seed: number, mode: M
     const replay = sec.label !== prevLabel ? byLabel.get(sec.label) : undefined;
     const picked: Picked[] = [];
     let ri = 0;
+    /** Patterns of the previous 2 bars, played again as an answer to them. */
+    let echo: Picked[] = [];
+    let ei = 0;
 
     while (i < end) {
       const t = Math.max(beats[i], b.readyT + 0.01);
       const left = end - i;
+      const offset = i - sec.start;
       let p: Pattern | null = null;
+      // musical phrases are 4 bars long; their second half often repeats the first one
+      if (offset > 0 && offset % (2 * PHRASE) === PHRASE && b.rand() < C.phraseRepeat) {
+        echo = picked.filter((pk) => pk.offset >= offset - PHRASE && pk.offset < offset).map((pk) => ({ ...pk, offset: pk.offset + PHRASE }));
+        ei = 0;
+      }
+      while (replay && ri < replay.length && replay[ri].offset < offset) ri++;
+      while (ei < echo.length && echo[ei].offset < offset) ei++;
 
       if (t < firstT || loudness(an, i, i + 2 * bpu) < C.silence) {
         p = REST_PATTERN;
       } else if (i === sec.start && sec.drop && left >= DROP_PATTERN.steps * bpu / 2 && b.drops.every((d) => t - d > 8 * b.beatDur)) {
         p = DROP_PATTERN;
         b.drops.push(t);
-      } else if (replay && ri < replay.length && replay[ri].offset === i - sec.start && fits(b, replay[ri].pattern, left, P.maxSteps)) {
+      } else if (replay && ri < replay.length && replay[ri].offset === offset && fits(b, replay[ri].pattern, left, P.maxSteps)) {
         p = replay[ri++].pattern;
+      } else if (ei < echo.length && echo[ei].offset === offset && fits(b, echo[ei].pattern, left, P.maxSteps)) {
+        p = echo[ei++].pattern;
       } else {
         const local = loudness(an, i, i + 4 * bpu) - sec.energy;
         const target = Math.max(0.05, sectionCps * (1 + 1.2 * local));
