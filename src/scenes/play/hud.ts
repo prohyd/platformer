@@ -68,7 +68,7 @@ function drawScore(ui: Ui, s: HudState) {
   const y = 46;
   const sc = s.run.scorer;
   ui.text(sc.score.toLocaleString('ru'), ui.W - 20, y + 26, 26, '#fff', 'right', 900, ui.pal.neon);
-  ui.text(`точность ${Math.round(sc.accuracy * 100)}%`, ui.W - 20, y + 50, 12, 'rgba(255,255,255,0.6)', 'right', 600);
+  ui.text(`точность ${Math.round(sc.liveAccuracy * 100)}%`, ui.W - 20, y + 50, 12, 'rgba(255,255,255,0.6)', 'right', 600);
   if (s.mode === 'hardcore') ui.text(`ХАРДКОР · попытка ${s.attempts} · рекорд ${s.bestPercent}%`, ui.W - 20, y + 70, 12, DANGER, 'right', 800);
 }
 

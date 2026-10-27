@@ -18,6 +18,8 @@ export class Camera {
   x = 0;
   /** World y that sits on the "floor line" of the screen. */
   y = 0;
+  /** Height of the floor the runner last stood on. */
+  private ground = 0;
   zoom = 1;
   shake = 0;
 
@@ -44,9 +46,11 @@ export class Camera {
     const targetZoom = 1 + CONFIG.feel.kickZoom * Math.min(1, pulse.kick) + CONFIG.feel.beatZoom * pulse.beatPulse;
     this.zoom += (targetZoom - this.zoom) * Math.min(1, dt * 20);
     if (run) {
-      // the runner stays at 30% of the width; the floor line follows it softly
+      // the runner stays at 30% of the width; the floor line follows it softly.
+      // In the air the camera keeps the floor in view and only rises for really high flights.
       this.x = run.x - this.viewW * 0.3;
-      const ty = run.grounded ? run.y : Math.min(run.y, this.y + 140);
+      if (run.grounded) this.ground = run.y;
+      const ty = run.grounded ? run.y : Math.max(this.ground, run.y - 170);
       this.y += (ty - this.y) * Math.min(1, dt * 3);
     } else {
       this.x += dt * 260;
