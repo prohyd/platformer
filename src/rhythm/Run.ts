@@ -4,7 +4,8 @@
 import { CONFIG } from '../config.ts';
 import { CEIL_H, HALF, PH, SPIKE_H } from './geometry.ts';
 import { Scorer, type Grade } from './Scorer.ts';
-import type { Chart, Cue, Pit } from './types.ts';
+import { xAt } from './speed.ts';
+import type { Chart, Cue, Orb, Pit } from './types.ts';
 
 export type { Grade } from './Scorer.ts';
 
@@ -48,7 +49,7 @@ export class Run {
     this.c = c;
     this.scorer = new Scorer(c.cues);
     this.t = startT;
-    this.x = startT * c.speed;
+    this.x = xAt(c.speeds, startT);
     this.y = this.floorAt(this.x - HALF, this.x + HALF) ?? 0;
   }
 
@@ -98,9 +99,16 @@ export class Run {
 
   private tryOrb(time: number) {
     const tol = this.c.tol;
+    // the nearest orb wins: in fast chains the next orb is already within reach
+    let best: Orb | null = null;
     for (const o of this.c.orbs) {
-      if (o.used || Math.abs(o.x - this.x) > tol.orbX) continue;
+      if (o.x - this.x > tol.orbX) break;
+      if (o.used || this.x - o.x > tol.orbX) continue;
       if (Math.abs(o.y - (this.y + PH / 2)) > tol.orbY) continue;
+      if (!best || Math.abs(o.x - this.x) < Math.abs(best.x - this.x)) best = o;
+    }
+    if (best) {
+      const o = best;
       o.used = true;
       // the orb pulls you to its centre, so timing errors never pile up along a chain
       this.y = o.y - PH / 2;
@@ -142,7 +150,7 @@ export class Run {
 
   private step(dt: number) {
     if (dt <= 0) return;
-    this.x = (this.t + dt) * this.c.speed;
+    this.x = xAt(this.c.speeds, this.t + dt);
     if (this.ghost > 0) this.ghost = Math.max(0, this.ghost - dt);
     if (this.coyote > 0) this.coyote -= dt;
 
@@ -244,8 +252,8 @@ export class Run {
   private checkPads() {
     if (!this.grounded) return;
     for (const p of this.c.pads) {
-      if (p.x - this.x < 14 && this.x - p.x < 24 && Math.abs(p.y - this.y) < 2) {
-        this.jump(this.c.padV, 'pad');
+      if (this.x >= p.x && this.x - p.x < 24 && Math.abs(p.y - this.y) < 2) {
+        this.jump(p.v, 'pad');
         this.events.push({ type: 'pad', x: p.x, y: p.y });
         return;
       }

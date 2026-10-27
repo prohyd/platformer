@@ -52,6 +52,32 @@ export interface Pad {
   x: number;
   y: number;
   t: number;
+  /** Take-off velocity. */
+  v: number;
+  /** A big pad (drawn larger, used on drops). */
+  big: boolean;
+}
+
+/** From time `t` on the runner moves at `speed`; `x` is where that happens. */
+export interface SpeedSeg {
+  t: number;
+  x: number;
+  speed: number;
+  /** Speed relative to the song's base speed (1 = normal). */
+  mul: number;
+}
+
+/** A part of the song as the level sees it. */
+export interface ChartSection {
+  /** Start time, s. */
+  t: number;
+  /** World x of the start. */
+  x: number;
+  /** 0..1 */
+  intensity: number;
+  /** Parts that sound alike share a label. */
+  label: number;
+  drop: boolean;
 }
 
 /** A collectible gem. */
@@ -82,8 +108,12 @@ export interface Tolerance {
 export interface Chart {
   mode: Mode;
   tol: Tolerance;
-  /** Running speed, px/s. */
+  /** Base running speed, px/s (see `speeds` for portals). */
   speed: number;
+  /** Speed changes (speed portals), sorted by time; the first one starts before the song. */
+  speeds: SpeedSeg[];
+  /** Parts of the song, in order. */
+  sections: ChartSection[];
   /** Length of one beat, s. */
   beatDur: number;
   /** Length of one jump, s (one or two beats). */
@@ -95,8 +125,6 @@ export interface Chart {
   v0: number;
   /** Gravity. */
   g: number;
-  /** Launch pad velocity. */
-  padV: number;
   beats: number[];
   floors: Floor[];
   pits: Pit[];
@@ -111,4 +139,12 @@ export interface Chart {
   duration: number;
   /** Where the finish line is. */
   endX: number;
+  /** Which patterns were placed where (for stats and debugging). */
+  patterns?: PlacedPattern[];
+}
+
+/** A pattern the generator placed. */
+export interface PlacedPattern {
+  t: number;
+  name: string;
 }

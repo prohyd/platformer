@@ -8,34 +8,30 @@
 
 /** Параметры генерации уровня для одной сложности одного режима. */
 export interface LevelParams {
-  /** Насколько сильным должен быть звук на доле, чтобы там появилось препятствие (0..1). Меньше = больше препятствий. */
-  threshold: number;
-  /** Минимум долей между препятствиями (0 = можно прыгать на каждой доле). */
-  minGap: number;
-  /** Пауза в одну долю после каждого прыжка (для самого лёгкого уровня). */
-  easyRest: boolean;
-  /** Максимальная длина цепочки колец над пропастью (0 = цепочек нет). */
+  /**
+   * Динамика уровня в кликах в секунду (CPS, как в Geometry Dash):
+   * [в самой спокойной части песни, в самой мощной]. Генератор подбирает паттерны так,
+   * чтобы плотность нажатий шла за музыкой между этими числами.
+   */
+  cps: [number, number];
+  /** Самый сложный уровень паттернов (0 = только одиночные прыжки … 4 = длинные быстрые цепочки). */
+  maxTier: number;
+  /** Можно ли жать между долями (розовые кольца, быстрые цепочки). */
+  offbeat: boolean;
+  /** Самая длинная цепочка колец (сколько колец подряд). */
   chainMax: number;
-  /** С какой громкости музыки (0..1) начинают появляться цепочки колец. */
-  chainMinEnergy: number;
-  /** Вероятность выбрать цепочку колец, если музыка позволяет (0..1). */
-  chainChance: number;
-  /** Вероятность розового кольца между долями (0 = нет). */
-  offbeatChance: number;
-  /** Вероятность шипастого потолка в тихих местах (0 = нет). Наказывает лишние прыжки. */
-  ceilChance: number;
-  /** Вероятность ступеньки вверх (0..1). */
-  stepChance: number;
-  /** Сколько ступенек вверх подряд максимум. */
+  /** Шипастые потолки (наказывают лишние прыжки). */
+  ceilings: boolean;
+  /** Порталы скорости на смене частей песни: тихие части медленнее, припевы быстрее. */
+  portals: boolean;
+  /** Отдых (в половинках прыжка) после каждого паттерна. */
+  rest: number;
+  /** Сколько ступенек вверх можно набрать. */
   maxSteps: number;
-  /** Доля пропастей среди обычных прыжков; остальное — шипы (0..1). */
-  pitShare: number;
   /** Запас по краям пропасти. Меньше = нужна точнее. */
   pitMargin: number;
   /** Ширина шипов. Больше = нужна точнее. */
   spikeW: number;
-  /** Вероятность двойных шипов (0..1). */
-  doubleChance: number;
   /** Множитель скорости бега. */
   speedMul: number;
   /** Насколько физика прощает неточность. */
@@ -133,51 +129,57 @@ export const CONFIG = {
   levels: {
     flow: [
       {
-        threshold: 0.62, minGap: 2, easyRest: true,
-        chainMax: 0, chainMinEnergy: 0.5, chainChance: 0.45, offbeatChance: 0, ceilChance: 0,
-        stepChance: 0.5, maxSteps: 3, pitShare: 0.7,
-        pitMargin: 26, spikeW: 26, doubleChance: 0, speedMul: 1,
+        cps: [0.25, 1.1], maxTier: 1, offbeat: false, chainMax: 0, ceilings: false, portals: false, rest: 2,
+        maxSteps: 3, pitMargin: 26, spikeW: 26, speedMul: 1,
         tolerance: { orbX: 44, orbY: 95, coyote: 0.07, buffer: 0.12 },
       },
       {
-        threshold: 0.47, minGap: 1, easyRest: false,
-        chainMax: 2, chainMinEnergy: 0.5, chainChance: 0.45, offbeatChance: 0, ceilChance: 0,
-        stepChance: 0.5, maxSteps: 3, pitShare: 0.62,
-        pitMargin: 26, spikeW: 26, doubleChance: 0, speedMul: 1,
+        cps: [0.5, 2.1], maxTier: 2, offbeat: false, chainMax: 2, ceilings: false, portals: true, rest: 0,
+        maxSteps: 3, pitMargin: 26, spikeW: 26, speedMul: 1,
         tolerance: { orbX: 44, orbY: 95, coyote: 0.07, buffer: 0.12 },
       },
       {
-        threshold: 0.36, minGap: 1, easyRest: false,
-        chainMax: 4, chainMinEnergy: 0.5, chainChance: 0.45, offbeatChance: 0, ceilChance: 0,
-        stepChance: 0.5, maxSteps: 3, pitShare: 0.62,
-        pitMargin: 26, spikeW: 26, doubleChance: 0.5, speedMul: 1,
+        cps: [0.8, 3.0], maxTier: 3, offbeat: true, chainMax: 4, ceilings: false, portals: true, rest: 0,
+        maxSteps: 3, pitMargin: 24, spikeW: 28, speedMul: 1,
         tolerance: { orbX: 44, orbY: 95, coyote: 0.07, buffer: 0.12 },
       },
     ],
     hardcore: [
       {
-        threshold: 0.42, minGap: 1, easyRest: false,
-        chainMax: 2, chainMinEnergy: 0.5, chainChance: 0.38, offbeatChance: 0.3, ceilChance: 0.3,
-        stepChance: 0.5, maxSteps: 4, pitShare: 0.62,
-        pitMargin: 12, spikeW: 36, doubleChance: 0.35, speedMul: 1.12,
+        cps: [0.7, 2.6], maxTier: 3, offbeat: true, chainMax: 3, ceilings: true, portals: true, rest: 0,
+        maxSteps: 4, pitMargin: 12, spikeW: 36, speedMul: 1.12,
         tolerance: { orbX: 34, orbY: 60, coyote: 0.05, buffer: 0.09 },
       },
       {
-        threshold: 0.3, minGap: 0, easyRest: false,
-        chainMax: 4, chainMinEnergy: 0.4, chainChance: 0.38, offbeatChance: 0.5, ceilChance: 0.45,
-        stepChance: 0.5, maxSteps: 4, pitShare: 0.62,
-        pitMargin: 9, spikeW: 38, doubleChance: 0.6, speedMul: 1.16,
+        cps: [1.0, 3.6], maxTier: 4, offbeat: true, chainMax: 5, ceilings: true, portals: true, rest: 0,
+        maxSteps: 4, pitMargin: 9, spikeW: 38, speedMul: 1.16,
         tolerance: { orbX: 31, orbY: 52, coyote: 0.04, buffer: 0.085 },
       },
       {
-        threshold: 0.2, minGap: 0, easyRest: false,
-        chainMax: 6, chainMinEnergy: 0.3, chainChance: 0.38, offbeatChance: 0.65, ceilChance: 0.6,
-        stepChance: 0.5, maxSteps: 4, pitShare: 0.62,
-        pitMargin: 7, spikeW: 40, doubleChance: 0.8, speedMul: 1.2,
+        cps: [1.4, 4.8], maxTier: 4, offbeat: true, chainMax: 7, ceilings: true, portals: true, rest: 0,
+        maxSteps: 4, pitMargin: 7, spikeW: 40, speedMul: 1.2,
         tolerance: { orbX: 29, orbY: 48, coyote: 0.035, buffer: 0.08 },
       },
     ],
   } satisfies Record<'flow' | 'hardcore', LevelParams[]>,
+
+  // -------------------------------------------------------------- подбор паттернов под музыку
+  conductor: {
+    /** Насколько важно попасть в нужный CPS. */
+    densityWeight: 1.3,
+    /** Насколько важно, чтобы нажатия совпадали с ударами в музыке. */
+    musicWeight: 1.6,
+    /** Штраф за паттерн, который недавно уже был. */
+    repeatPenalty: 0.7,
+    /** Бонус паттерну из «стиля» текущей части песни. */
+    styleBonus: 0.45,
+    /** Немного случайности, чтобы уровни не были одинаковыми. */
+    randomness: 0.35,
+    /** Тише этого (0..1) музыка считается паузой: только бег и кристаллы. */
+    silence: 0.12,
+    /** Множитель скорости для частей песни по их «накалу»: [спокойная, обычная, мощная, самая мощная]. */
+    portalSpeeds: [0.85, 1, 1.12, 1.25],
+  },
 
   // -------------------------------------------------------------- звук
   audio: {

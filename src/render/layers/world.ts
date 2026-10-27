@@ -1,5 +1,6 @@
 // The level itself: floors, beat lines, obstacles, orbs, gems. Drawn in world space (y up).
 import { CEIL_H, PH, SPIKE_H } from '../../rhythm/geometry.ts';
+import { xAt } from '../../rhythm/speed.ts';
 import type { Chart } from '../../rhythm/types.ts';
 import type { Camera } from '../Camera.ts';
 import type { MusicPulse } from '../MusicPulse.ts';
@@ -42,6 +43,7 @@ export function drawLevel(dc: WorldDrawContext, c: Chart, songT: number) {
   drawSpikes(dc, c);
   drawCeilings(dc, c);
   drawPads(dc, c);
+  drawPortals(dc, c);
   drawOrbs(dc, c, songT);
   drawGems(dc, c);
 }
@@ -62,7 +64,7 @@ function drawFloors({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, son
   // beat lines in the ground: they light up when their beat plays
   const beats = c.beats;
   for (let i = 0; i < beats.length; i++) {
-    const x = beats[i] * c.speed;
+    const x = xAt(c.speeds, beats[i]);
     if (x < cam.x - 50) continue;
     if (x > cam.x + cam.viewW + 200) break;
     const f = c.floors.find((fl) => x >= fl.x0 && x <= fl.x1);
@@ -198,24 +200,64 @@ function drawCeilings({ ctx, cam, pal, pulse }: WorldDrawContext, c: Chart) {
 function drawPads({ ctx, cam, pal: p, time }: WorldDrawContext, c: Chart) {
   for (const pd of c.pads) {
     if (!cam.visible(pd.x - 30, pd.x + 30)) continue;
-    ctx.fillStyle = p.accent;
-    ctx.shadowColor = p.accent;
+    // big pads (drops) are gold-ish accent, small ones pink
+    const col = pd.big ? p.accent : p.neon2;
+    const s = pd.big ? 1 : 0.75;
+    ctx.fillStyle = col;
+    ctx.shadowColor = col;
     ctx.shadowBlur = 16;
-    ctx.fillRect(pd.x - 18, pd.y, 36, 5);
-    for (let i = 0; i < 3; i++) {
+    ctx.fillRect(pd.x - 18 * s, pd.y, 36 * s, 5);
+    for (let i = 0; i < (pd.big ? 3 : 2); i++) {
       const yy = pd.y + 10 + i * 12 + ((time * 40) % 12);
       ctx.globalAlpha = 1 - i * 0.3;
       ctx.beginPath();
-      ctx.moveTo(pd.x - 12, yy);
-      ctx.lineTo(pd.x, yy + 9);
-      ctx.lineTo(pd.x + 12, yy);
-      ctx.lineTo(pd.x + 12, yy + 4);
-      ctx.lineTo(pd.x, yy + 13);
-      ctx.lineTo(pd.x - 12, yy + 4);
+      ctx.moveTo(pd.x - 12 * s, yy);
+      ctx.lineTo(pd.x, yy + 9 * s);
+      ctx.lineTo(pd.x + 12 * s, yy);
+      ctx.lineTo(pd.x + 12 * s, yy + 4);
+      ctx.lineTo(pd.x, yy + 9 * s + 4);
+      ctx.lineTo(pd.x - 12 * s, yy + 4);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
+  }
+}
+
+/** Speed portals: a tall gate with chevrons, more chevrons = faster (like in Geometry Dash). */
+function drawPortals({ ctx, cam, pal: p, pulse, time }: WorldDrawContext, c: Chart) {
+  for (let i = 1; i < c.speeds.length; i++) {
+    const sp = c.speeds[i];
+    if (!cam.visible(sp.x - 40, sp.x + 40)) continue;
+    const f = c.floors.find((fl) => sp.x >= fl.x0 && sp.x <= fl.x1);
+    const y0 = f ? f.y : 0;
+    const faster = sp.mul > c.speeds[i - 1].mul;
+    const col = faster ? '#ff9f43' : '#5ee7ff';
+    const hgt = 150;
+    ctx.save();
+    ctx.strokeStyle = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 18 + 10 * pulse.beatPulse;
+    ctx.lineWidth = 4;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.ellipse(sp.x, y0 + hgt / 2, 16, hgt / 2, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // chevrons: 1 = slow, 2 = normal, 3 = fast, 4 = very fast
+    const n = sp.mul < 0.95 ? 1 : sp.mul < 1.05 ? 2 : sp.mul < 1.2 ? 3 : 4;
+    ctx.fillStyle = col;
+    for (let k = 0; k < n; k++) {
+      const cy = y0 + hgt / 2 + (k - (n - 1) / 2) * 22;
+      const dx = Math.sin(time * 6 + k) * 2;
+      ctx.beginPath();
+      ctx.moveTo(sp.x - 6 + dx, cy + 8);
+      ctx.lineTo(sp.x + 6 + dx, cy);
+      ctx.lineTo(sp.x - 6 + dx, cy - 8);
+      ctx.lineTo(sp.x - 2 + dx, cy);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
   }
 }
 

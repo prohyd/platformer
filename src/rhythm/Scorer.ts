@@ -18,6 +18,8 @@ export class Scorer {
   private readonly cues: Cue[];
   /** Cues before this index are already decided. */
   private cueI = 0;
+  /** How many cues are already behind us (pressed, missed or skipped). */
+  private decided = 0;
 
   constructor(cues: Cue[]) {
     this.cues = cues;
@@ -39,6 +41,7 @@ export class Scorer {
     }
     if (!best) return null;
     best.judged = true;
+    this.decided++;
     const grade: Grade = bd <= J.perfect ? 'PERFECT' : bd <= J.great ? 'GREAT' : 'GOOD';
     this.counts[grade]++;
     this.combo++;
@@ -50,8 +53,9 @@ export class Scorer {
   /** Cues that are long gone were survived without a press: they cost nothing. */
   expire(now: number) {
     while (this.cueI < this.cues.length && this.cues[this.cueI].t < now - J.window) {
-      this.cues[this.cueI].judged = true;
-      this.cueI++;
+      const cu = this.cues[this.cueI++];
+      if (!cu.judged) this.decided++;
+      cu.judged = true;
     }
   }
 
@@ -64,6 +68,7 @@ export class Scorer {
       if (cu.t > now + 0.5) break;
       if (!cu.judged && cu.t > now - 0.6) {
         cu.judged = true;
+        this.decided++;
         break;
       }
     }
@@ -74,9 +79,18 @@ export class Scorer {
     this.score += S.gem;
   }
 
+  private get points() {
+    return this.counts.PERFECT + this.counts.GREAT * CONFIG.accuracy.GREAT + this.counts.GOOD * CONFIG.accuracy.GOOD;
+  }
+
+  /** Accuracy over the whole song (for the results). */
   get accuracy() {
-    const total = this.cues.length || 1;
-    return (this.counts.PERFECT + this.counts.GREAT * CONFIG.accuracy.GREAT + this.counts.GOOD * CONFIG.accuracy.GOOD) / total;
+    return this.points / (this.cues.length || 1);
+  }
+
+  /** Accuracy so far: only the cues that are already behind (for the HUD). */
+  get liveAccuracy() {
+    return this.decided ? this.points / this.decided : 1;
   }
 
   get rank(): Rank {
