@@ -1,10 +1,8 @@
-// Main menu: mode, difficulty, track list, "add your own track", volume window
-// (shown by itself before the very first song, so nobody misses the sound settings).
+// Main menu: mode, difficulty, track list, "add your own track", volume window.
 import type { Game } from '../core/Game.ts';
 import type { Command } from '../core/Input.ts';
 import type { Scene } from '../core/Scene.ts';
 import { records } from '../data/records.ts';
-import { storage } from '../data/storage.ts';
 import type { Track } from '../data/playlist.ts';
 import { DANGER, RANK_COLORS } from '../render/palette.ts';
 import type { WorldView } from '../render/Renderer.ts';
@@ -17,8 +15,6 @@ import { drawLogo, gearButton, volumeControls } from '../ui/widgets.ts';
 
 const ROW_H = 60;
 const ROW_GAP = 8;
-/** Remembers that the sound window was already shown before a first song. */
-const SOUND_CHECKED = 'sound-checked';
 
 export class MenuScene implements Scene {
   private readonly game: Game;
@@ -28,8 +24,6 @@ export class MenuScene implements Scene {
   /** Level ratings of tracks that were already played, by track + mode + difficulty. */
   private readonly ratings = new Map<string, string>();
   private showVolume = false;
-  /** The track to start when the first-time sound window is closed. */
-  private pending: Track | null = null;
 
   constructor(game: Game) {
     this.game = game;
@@ -60,23 +54,7 @@ export class MenuScene implements Scene {
 
   private playSelected() {
     const t = this.tracks[this.game.settings.selected];
-    if (t) this.play(t);
-  }
-
-  /** Start a song; the very first time, ask to set the volume first. */
-  private play(t: Track) {
-    if (storage.get(SOUND_CHECKED, false)) return this.game.play(t);
-    this.pending = t;
-    this.showVolume = true;
-  }
-
-  private closeVolume() {
-    this.showVolume = false;
-    const t = this.pending;
-    if (!t) return;
-    this.pending = null;
-    storage.set(SOUND_CHECKED, true);
-    this.game.play(t);
+    if (t) this.game.play(t);
   }
 
   // ---------------------------------------------------------------- scene
@@ -90,11 +68,7 @@ export class MenuScene implements Scene {
   onCommand(cmd: Command) {
     const s = this.game.settings;
     if (this.showVolume) {
-      if (cmd === 'primary' || cmd === 'confirm') this.closeVolume();
-      else if (cmd === 'back') {
-        this.showVolume = false;
-        this.pending = null;
-      }
+      if (cmd === 'back' || cmd === 'primary' || cmd === 'confirm') this.showVolume = false;
       return;
     }
     const n = this.tracks.length;
@@ -203,7 +177,7 @@ export class MenuScene implements Scene {
     const { mode, difficulty, selected } = this.game.settings;
     const isSel = i === selected;
     const narrow = ui.W < 760;
-    ui.hotspot(hit, () => (isSel ? this.play(t) : this.select(i)));
+    ui.hotspot(hit, () => (isSel ? this.game.play(t) : this.select(i)));
     ui.panel(lx, y, listW, ROW_H, isSel ? 0.75 : ui.hovered(hit) ? 0.6 : 0.45, isSel ? ui.pal.neon : 'rgba(255,255,255,0.1)');
     if (isSel) {
       ctx.fillStyle = ui.pal.neon;
@@ -257,15 +231,12 @@ export class MenuScene implements Scene {
   private drawVolumeWindow(ui: Ui) {
     ui.clearHotspots();
     ui.dim(0.65);
-    const first = this.pending !== null;
-    const extra = first ? 34 : 0;
     const pw = Math.min(380, ui.W - 30);
     const x = ui.W / 2 - pw / 2;
-    const y = ui.H / 2 - 150 - extra / 2;
-    ui.panel(x, y, pw, 300 + extra, 0.9);
-    ui.text(first ? 'Сначала звук' : 'Громкость', ui.W / 2, y + 40, 28, '#fff', 'center', 900, ui.pal.neon);
-    if (first) ui.text('Игра про ритм: без музыки не получится. Потом — ⚙ в меню или пауза', ui.W / 2, y + 70, 12, 'rgba(255,255,255,0.7)', 'center', 600);
-    volumeControls(ui, this.game.audio, x + 28, y + 76 + extra, pw - 56);
-    ui.button({ x: x + 28, y: y + 228 + extra, w: pw - 56, h: 48 }, first ? '▶  Играть' : 'Готово', () => this.closeVolume(), { primary: true });
+    const y = ui.H / 2 - 150;
+    ui.panel(x, y, pw, 300, 0.9);
+    ui.text('Громкость', ui.W / 2, y + 40, 28, '#fff', 'center', 900, ui.pal.neon);
+    volumeControls(ui, this.game.audio, x + 28, y + 76, pw - 56);
+    ui.button({ x: x + 28, y: y + 228, w: pw - 56, h: 48 }, 'Готово', () => (this.showVolume = false), { primary: true });
   }
 }

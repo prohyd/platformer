@@ -1,6 +1,6 @@
 // Playing a song: feeds presses to the run in sync with the music, reacts to its
-// events, handles pause, deaths (back to a checkpoint, or from the start in hardcore),
-// the tutorial hints and the end of the song.
+// events, handles pause, deaths (back to a checkpoint, or from the start in hardcore)
+// and the end of the song.
 import { CONFIG } from '../config.ts';
 import type { Game } from '../core/Game.ts';
 import type { Command } from '../core/Input.ts';
@@ -8,7 +8,6 @@ import type { Scene } from '../core/Scene.ts';
 import type { LoadedTrack } from '../data/library.ts';
 import type { Track } from '../data/playlist.ts';
 import { records } from '../data/records.ts';
-import { project, toScreen } from '../render/Camera.ts';
 import { PRACTICE } from '../render/palette.ts';
 import type { WorldView } from '../render/Renderer.ts';
 import { buildChart, hashString } from '../rhythm/generator/buildChart.ts';
@@ -21,7 +20,6 @@ import type { Ui } from '../ui/Ui.ts';
 import { pauseButton } from '../ui/widgets.ts';
 import { FEEDBACK, type FeedbackTargets } from './play/feedback.ts';
 import { drawHud, drawPauseMenu, type DeathInfo } from './play/hud.ts';
-import { drawHint, Tutorial, type Hint } from './play/tutorial.ts';
 import { ResultsScene } from './ResultsScene.ts';
 
 /** Colour shifts for the parts of a song, by part label (parts that sound alike look alike). */
@@ -75,9 +73,6 @@ export class PlayScene implements Scene {
   /** Song time when the run (re)starts: 0, or a checkpoint. */
   private startT = 0;
   private deaths = 0;
-  private readonly tutorial: Tutorial | null;
-  /** A tutorial hint is on screen: the game stands still until a press. */
-  private hint: Hint | null = null;
 
   constructor(game: Game, track: Track, loaded: LoadedTrack, attempts: number) {
     this.game = game;
@@ -93,7 +88,6 @@ export class PlayScene implements Scene {
     this.run = new Run(this.chart, -this.leadIn);
     this.stats = chartStats(this.chart);
     this.start = { t: 0, x: 0, y: 0, score: this.run.scorer.snapshot() };
-    this.tutorial = AUTOPLAY ? null : new Tutorial(this.chart);
     this.baseHue = game.renderer.pal.hue;
     this.feedback = {
       fx: game.renderer.fx,
@@ -114,8 +108,7 @@ export class PlayScene implements Scene {
       if (cmd === 'back' || cmd === 'primary') this.resume();
       return;
     }
-    if (this.hint && (cmd === 'primary' || cmd === 'tap' || cmd === 'confirm')) this.closeHint();
-    else if (cmd === 'primary' || cmd === 'tap') this.press();
+    if (cmd === 'primary' || cmd === 'tap') this.press();
     else if (cmd === 'back' || cmd === 'pause') this.pause();
   }
 
@@ -135,20 +128,6 @@ export class PlayScene implements Scene {
 
   private resume() {
     this.paused = false;
-    if (!this.hint) this.game.audio.resume();
-    this.game.input.release();
-  }
-
-  /** Stop the song in front of a new kind of obstacle and explain it. */
-  private showHint(h: Hint) {
-    this.hint = h;
-    this.game.audio.pause();
-  }
-
-  private closeHint() {
-    if (!this.hint) return;
-    this.tutorial?.done(this.hint);
-    this.hint = null;
     this.game.audio.resume();
     this.game.input.release();
   }
@@ -214,9 +193,7 @@ export class PlayScene implements Scene {
   update(dt: number) {
     this.comboPulse = Math.max(0, this.comboPulse - dt * 4);
     this.songT = this.game.audio.songTime();
-    if (this.paused || this.hint) return;
-    const hint = this.run.dead ? null : this.tutorial?.due(this.songT);
-    if (hint) return this.showHint(hint);
+    if (this.paused) return;
 
     if (AUTOPLAY) this.autoPress();
     this.presses.sort((a, b) => a - b);
@@ -339,11 +316,6 @@ export class PlayScene implements Scene {
       checkpoints: this.checkpoints.length,
       deaths: this.deaths,
     });
-    if (this.hint && !this.paused) {
-      const r = this.game.renderer;
-      const p = toScreen(project(r.camera, r.canvas), this.hint.x, this.hint.y);
-      drawHint(ui, this.hint, p.x / r.camera.dpr, p.y / r.camera.dpr);
-    }
     pauseButton(ui, () => this.pause());
     if (this.paused) {
       drawPauseMenu(ui, this.game.audio, {
