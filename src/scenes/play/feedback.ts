@@ -30,15 +30,6 @@ export const FEEDBACK: Record<RunEvent['type'], Reaction> = {
     bumpCombo();
   },
 
-  miss(ev, { fx, audio, shake }) {
-    fx.popup(ev.x, ev.y + 70, 'MISS', '#ff4d6d', true);
-    fx.missFlash = 1;
-    shake(CONFIG.feel.shakeOnMiss);
-    fx.particles.burst(ev.x, ev.y + 12, { n: 20, color: ['#ff4d6d', '#fff'], speed: 220, size: 3, life: 0.5, shape: 'square' });
-    audio.muffle();
-    audio.sound('miss');
-  },
-
   death(ev, { fx, audio, shake }) {
     fx.missFlash = 1.4;
     shake(CONFIG.feel.shakeOnDeath);

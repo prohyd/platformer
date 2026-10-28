@@ -4,9 +4,13 @@
 export type Difficulty = 0 | 1 | 2;
 export const DIFF_NAMES = ['Лёгкий', 'Нормальный', 'Сложный'];
 
-/** flow: mistakes are forgiven and the song goes on. hardcore: one mistake = start over. */
+/**
+ * flow (shown as «Чекпоинты»): a mistake sends you back to the last checkpoint, gentler levels.
+ * hardcore: one mistake = start over (its practice switch adds checkpoints too).
+ * The id stays 'flow' so records saved before the change still match.
+ */
 export type Mode = 'flow' | 'hardcore';
-export const MODE_NAMES: Record<Mode, string> = { flow: 'Поток', hardcore: 'Хардкор' };
+export const MODE_NAMES: Record<Mode, string> = { flow: 'Чекпоинты', hardcore: 'Хардкор' };
 
 /** A solid stretch of ground. */
 export interface Floor {

@@ -1,7 +1,6 @@
 // The run: runner physics locked to the song clock, collisions and mistakes.
 // Scoring lives in Scorer; what happened during a frame is reported as RunEvents
 // (the play scene turns them into sounds and visual effects).
-import { CONFIG } from '../config.ts';
 import { CEIL_H, HALF, PH, SPIKE_H } from './geometry.ts';
 import { Scorer, type Grade } from './Scorer.ts';
 import { speedAt, xAt } from './speed.ts';
@@ -10,7 +9,7 @@ import type { Chart, Cue, Orb, Pit } from './types.ts';
 export type { Grade } from './Scorer.ts';
 
 export interface RunEvent {
-  type: 'jump' | 'orb' | 'land' | 'pad' | 'note' | 'grade' | 'miss' | 'death';
+  type: 'jump' | 'orb' | 'land' | 'pad' | 'note' | 'grade' | 'death';
   x: number;
   y: number;
   grade?: Grade;
@@ -19,7 +18,6 @@ export interface RunEvent {
 
 /** Physics sub-step: small enough that nothing is ever skipped. */
 const SUB = 1 / 240;
-const GHOST_TIME = CONFIG.timing.ghostTime;
 /** The most a jump is stretched or squeezed to land on the beat, s. */
 const MAX_FIX = 0.1;
 
@@ -37,9 +35,7 @@ export class Run {
   coyote = 0;
   /** Time of a press that is waiting for a landing or an orb (-1 = none). */
   buffer = -1;
-  /** Flow mode: invulnerable after a mistake. */
-  ghost = 0;
-  /** Hardcore only: the run is over. */
+  /** Hit something: the run is over (the play scene restarts it or goes back to a checkpoint). */
   dead = false;
   /** What happened since the last frame. Cleared by whoever reads it. */
   events: RunEvent[] = [];
@@ -159,18 +155,12 @@ export class Run {
     if (res) this.events.push({ type: 'grade', x: res.cue.x, y: res.cue.y, grade: res.grade, combo: this.scorer.combo });
   }
 
-  /** Hit something. Flow: become a ghost for a moment. Hardcore: the run is over. */
+  /** Hit something: the run is over in every mode. */
   private miss() {
-    if (this.ghost > 0 || this.dead) return;
-    if (this.c.mode === 'hardcore') {
-      this.dead = true;
-      this.scorer.combo = 0;
-      this.events.push({ type: 'death', x: this.x, y: this.y });
-      return;
-    }
-    this.scorer.miss(this.t);
-    this.ghost = GHOST_TIME;
-    this.events.push({ type: 'miss', x: this.x, y: this.y, grade: 'MISS' });
+    if (this.dead) return;
+    this.dead = true;
+    this.scorer.combo = 0;
+    this.events.push({ type: 'death', x: this.x, y: this.y });
   }
 
   // ================================================================== physics
@@ -178,7 +168,6 @@ export class Run {
   private step(dt: number) {
     if (dt <= 0) return;
     this.x = xAt(this.c.speeds, this.t + dt);
-    if (this.ghost > 0) this.ghost = Math.max(0, this.ghost - dt);
     if (this.coyote > 0) this.coyote -= dt;
 
     const prevY = this.y;
@@ -201,13 +190,8 @@ export class Run {
   /** Standing, walking off edges and landing. Returns the pit under the runner, if any. */
   private resolveGround(prevY: number): Pit | undefined {
     const c = this.c;
-    let floor = this.floorAt(this.x - HALF, this.x + HALF);
+    const floor = this.floorAt(this.x - HALF, this.x + HALF);
     const pit = floor === null ? this.pitAt(this.x) : undefined;
-    if (floor === null && this.ghost > 0 && pit) {
-      // a ghost runs over pits as if they were bridges
-      floor = pit.y;
-      this.ghost = Math.max(this.ghost, 0.05);
-    }
 
     if (this.grounded) {
       if (floor === null) {
@@ -238,7 +222,7 @@ export class Run {
   private resolveWalls(prevY: number) {
     const front = this.floorAt(this.x + HALF - 2, this.x + HALF);
     if (front !== null && front > this.y + 1.5 && prevY < front - 1) {
-      if (this.ghost <= 0 && front - this.y >= 6) this.miss();
+      if (front - this.y >= 6) this.miss();
       this.y = front;
       this.vy = 0;
       this.grounded = true;
@@ -262,7 +246,6 @@ export class Run {
   }
 
   private checkHazards() {
-    if (this.ghost > 0) return;
     for (const s of this.c.spikes) {
       if (s.x > this.x + HALF) break;
       if (s.x + s.w < this.x - HALF) continue;

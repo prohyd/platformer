@@ -1,5 +1,5 @@
 // Everything drawn on top of the game: song waveform, score, combo, count-in,
-// the hardcore death screen and the pause menu.
+// the death screen and the pause menu.
 import type { Analysis } from '../../audio/analyze.ts';
 import type { AudioEngine } from '../../audio/AudioEngine.ts';
 import type { Track } from '../../data/playlist.ts';
@@ -9,6 +9,22 @@ import type { ChartStats } from '../../rhythm/stats.ts';
 import { DIFF_NAMES, MODE_NAMES, type Chart, type Difficulty, type Mode } from '../../rhythm/types.ts';
 import type { Ui } from '../../ui/Ui.ts';
 import { formatTime, volumeControls } from '../../ui/widgets.ts';
+
+/** What the death screen shows. */
+export interface DeathInfo {
+  /** How far into the song, 0..1. */
+  progress: number;
+  /** Hardcore: the furthest reach so far. */
+  record: boolean;
+  /** Set when the run goes back to a checkpoint instead of starting over. */
+  checkpoint?: {
+    /** No checkpoint passed yet: back to the start of the song. */
+    atStart: boolean;
+    /** Points won since the checkpoint, now lost. */
+    lost: number;
+    practice: boolean;
+  };
+}
 
 /** Everything the HUD needs to know. */
 export interface HudState {
@@ -22,8 +38,8 @@ export interface HudState {
   attempts: number;
   /** Best hardcore reach for this song, 0..100. */
   bestPercent: number;
-  /** Set after a hardcore death. */
-  death: { progress: number; record: boolean; practice: boolean } | null;
+  /** Set after a death. */
+  death: DeathInfo | null;
   /** Length of the count-in, s. */
   leadIn: number;
   /** 0..1, makes the combo counter jump. */
@@ -38,6 +54,7 @@ export interface HudState {
   startT: number;
   practice: boolean;
   checkpoints: number;
+  deaths: number;
 }
 
 export function drawHud(ui: Ui, s: HudState) {
@@ -78,8 +95,9 @@ function drawScore(ui: Ui, s: HudState) {
   const sc = s.run.scorer;
   ui.text(sc.score.toLocaleString('ru'), ui.W - 20, y + 26, 26, '#fff', 'right', 900, ui.pal.neon);
   ui.text(`точность ${Math.round(sc.liveAccuracy * 100)}%`, ui.W - 20, y + 50, 12, 'rgba(255,255,255,0.6)', 'right', 600);
-  if (s.practice) ui.text(`ПРАКТИКА · чекпоинтов ${s.checkpoints} · попытка ${s.attempts}`, ui.W - 20, y + 70, 12, PRACTICE, 'right', 800);
-  else if (s.mode === 'hardcore') ui.text(`ХАРДКОР · попытка ${s.attempts} · рекорд ${s.bestPercent}%`, ui.W - 20, y + 70, 12, DANGER, 'right', 800);
+  if (s.practice || s.mode === 'flow') {
+    ui.text(`${s.practice ? 'ПРАКТИКА' : 'ЧЕКПОИНТЫ'} · ◆ ${s.checkpoints} · смертей ${s.deaths}`, ui.W - 20, y + 70, 12, PRACTICE, 'right', 800);
+  } else if (s.mode === 'hardcore') ui.text(`ХАРДКОР · попытка ${s.attempts} · рекорд ${s.bestPercent}%`, ui.W - 20, y + 70, 12, DANGER, 'right', 800);
 }
 
 function drawCombo(ui: Ui, s: HudState) {
@@ -108,12 +126,17 @@ function drawCountIn(ui: Ui, s: HudState) {
   ui.text(`Уровень: ${st.rating}  ·  ${st.clicks} нажатий  ·  в среднем ${st.avgCps.toFixed(1)}, в пике ${st.peakCps.toFixed(1)} клик/с`, ui.W / 2, ui.H * 0.42 + 106, 13, 'rgba(255,255,255,0.6)', 'center', 700);
 }
 
-/** Hardcore: how far you got. */
-function drawDeath(ui: Ui, death: { progress: number; record: boolean; practice: boolean }) {
-  ui.dim(0.35, death.practice ? '0,30,15' : '40,0,15');
-  ui.text(`${Math.floor(death.progress * 100)}%`, ui.W / 2, ui.H * 0.42, 96, '#fff', 'center', 900, death.practice ? PRACTICE : '#ff4d6d');
-  const msg = death.practice ? 'Практика: продолжаем с чекпоинта' : death.record ? '★ Новый рекорд прохождения!' : 'Ещё раз — с самого начала';
+/** How far you got, and what the mistake cost. */
+function drawDeath(ui: Ui, death: DeathInfo) {
+  const cp = death.checkpoint;
+  ui.dim(0.35, cp ? '0,30,15' : '40,0,15');
+  ui.text(`${Math.floor(death.progress * 100)}%`, ui.W / 2, ui.H * 0.42, 96, '#fff', 'center', 900, cp ? PRACTICE : '#ff4d6d');
+  let msg = death.record ? '★ Новый рекорд прохождения!' : 'Ещё раз — с самого начала';
+  if (cp) msg = cp.atStart ? 'Назад к началу песни' : 'Назад к последнему чекпоинту ◆';
   ui.text(msg, ui.W / 2, ui.H * 0.42 + 70, 18, death.record ? GOLD : 'rgba(255,255,255,0.85)', 'center', 800);
+  if (cp && !cp.practice && cp.lost > 0) {
+    ui.text(`−${cp.lost.toLocaleString('ru')} очков и комбо`, ui.W / 2, ui.H * 0.42 + 98, 15, DANGER, 'center', 800);
+  }
 }
 
 export interface PauseActions {

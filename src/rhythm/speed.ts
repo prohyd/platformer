@@ -23,3 +23,4 @@ export function xAt(segs: SpeedSeg[], t: number) {
 export function speedAt(segs: SpeedSeg[], t: number) {
   return segAt(segs, t).speed;
 }
+

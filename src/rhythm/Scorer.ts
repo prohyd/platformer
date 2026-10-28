@@ -5,6 +5,16 @@ import type { Cue } from './types.ts';
 export type Grade = 'PERFECT' | 'GREAT' | 'GOOD' | 'MISS';
 export type Rank = 'S' | 'A' | 'B' | 'C' | 'D';
 
+/** Score at some moment of the run, to go back to after a death at a checkpoint. */
+export interface ScoreState {
+  score: number;
+  combo: number;
+  maxCombo: number;
+  counts: Record<Grade, number>;
+  notesTaken: number;
+  decided: number;
+}
+
 const J = CONFIG.judge;
 const S = CONFIG.score;
 const POINTS: Record<Grade, number> = { PERFECT: S.PERFECT, GREAT: S.GREAT, GOOD: S.GOOD, MISS: 0 };
@@ -50,7 +60,7 @@ export class Scorer {
     return { cue: best, grade };
   }
 
-  /** Start in the middle of the song (practice checkpoint): earlier cues are not counted at all. */
+  /** Start in the middle of the song (checkpoint): earlier cues are not counted again. */
   skipBefore(t: number) {
     while (this.cueI < this.cues.length && this.cues[this.cueI].t < t - 0.01) this.cues[this.cueI++].judged = true;
   }
@@ -64,19 +74,22 @@ export class Scorer {
     }
   }
 
-  /** A mistake: combo breaks and the cue we failed is used up. */
-  miss(now: number) {
-    this.counts.MISS++;
+  snapshot(): ScoreState {
+    const { score, combo, maxCombo, notesTaken, decided } = this;
+    return { score, combo, maxCombo, counts: { ...this.counts }, notesTaken, decided };
+  }
+
+  /**
+   * Back at a checkpoint after a death in run `died`: the score is what it was at the checkpoint
+   * (everything won since is lost), the combo is broken and every death counts as a MISS.
+   */
+  continueFrom(at: ScoreState, died: Scorer) {
+    this.score = at.score;
     this.combo = 0;
-    for (let i = this.cueI; i < this.cues.length; i++) {
-      const cu = this.cues[i];
-      if (cu.t > now + 0.5) break;
-      if (!cu.judged && cu.t > now - 0.6) {
-        cu.judged = true;
-        this.decided++;
-        break;
-      }
-    }
+    this.maxCombo = Math.max(at.maxCombo, died.maxCombo);
+    this.counts = { ...at.counts, MISS: died.counts.MISS + 1 };
+    this.notesTaken = at.notesTaken;
+    this.decided = at.decided;
   }
 
   gem() {

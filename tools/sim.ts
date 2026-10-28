@@ -1,5 +1,5 @@
 // Level checker: builds every mode × difficulty for a set of songs and lets a perfect
-// bot play them (it presses exactly on the cues, like ?autoplay). Any MISS or death means
+// bot play them (it presses exactly on the cues, like ?autoplay). Any death means
 // the generator produced something that cannot be passed. Also prints clicks-per-second stats.
 //
 //   node tools/sim.ts                     synthetic songs (different tempos and moods)
@@ -67,31 +67,23 @@ function gauss(rand: () => number, sd: number) {
   return sd * Math.sqrt(-2 * Math.log(rand() || 1e-9)) * Math.cos(2 * Math.PI * rand());
 }
 
-/** Plays the chart like the autoplay bot (or a human with timing error `sd`); returns the mistakes. */
+/** Plays the chart like the autoplay bot (or a human with timing error `sd`); returns where it died (-1 = finished). */
 function autoplay(chart: Chart, sd = 0, seed = 1) {
   let s = seed;
   const rand = () => ((s = (s * 1103515245 + 12345) >>> 0) / 4294967296);
   const run = new Run(chart, -1);
   const times = chart.cues.map((c) => c.t + (sd ? gauss(rand, sd) : 0)).sort((a, b) => a - b);
   let ci = 0;
-  let misses = 0;
   let death = -1;
-  const missAt: number[] = [];
   for (let t = -1; t < chart.duration + 0.5; t += 1 / 60) {
     const presses: number[] = [];
     while (ci < times.length && times[ci] <= t) presses.push(times[ci++]);
     run.update(t, presses);
-    for (const e of run.events) {
-      if (e.type === 'miss') {
-        misses++;
-        missAt.push(run.t);
-      }
-      if (e.type === 'death') death = run.t;
-    }
+    for (const e of run.events) if (e.type === 'death') death = run.t;
     run.events.length = 0;
     if (run.dead) break;
   }
-  return { misses, death, missAt, judged: run.scorer.counts };
+  return { death, judged: run.scorer.counts };
 }
 
 async function check(name: string, an: Analysis) {
@@ -102,9 +94,9 @@ async function check(name: string, an: Analysis) {
       const chart = buildChart(an, diff, 12345, mode);
       const st = chartStats(chart);
       const res = autoplay(chart);
-      const fail = res.misses > 0 || res.death >= 0;
+      const fail = res.death >= 0;
       if (fail) bad++;
-      const ok = fail ? `FAIL misses=${res.misses}${res.death >= 0 ? ` death@${res.death.toFixed(2)}s` : ''}` : 'ok';
+      const ok = fail ? `FAIL death@${res.death.toFixed(2)}s` : 'ok';
       console.log(
         `  ${mode.padEnd(8)} ${diff}  clicks ${String(st.clicks).padStart(4)}  avg ${st.avgCps.toFixed(2)} cps  peak ${st.peakCps.toFixed(2)} cps  ` +
           `orbs ${String(chart.orbs.length).padStart(3)}  patterns ${String(st.patterns).padStart(3)} (${String(new Set(chart.patterns?.map((q) => q.name)).size).padStart(2)} kinds)  portals ${chart.speeds.length - 1}  ${ok}`,
@@ -125,17 +117,15 @@ function human(an: Analysis) {
   for (const mode of MODES) {
     for (const diff of [0, 1, 2] as Difficulty[]) {
       let reach = 0;
-      let misses = 0;
       let passed = 0;
       for (let k = 0; k < TRIES; k++) {
         const chart = buildChart(an, diff, 12345, mode);
         const pats = chart.patterns ?? [];
         const res = autoplay(chart, HUMAN_SD, 1000 + k * 77);
-        const fails = res.death >= 0 ? [res.death] : res.missAt;
+        const fails = res.death >= 0 ? [res.death] : [];
         const end = res.death >= 0 ? res.death : chart.duration;
         reach += end / chart.duration;
-        misses += res.missAt.length;
-        if (res.death < 0 && !res.missAt.length) passed++;
+        if (res.death < 0) passed++;
         for (const p of pats) {
           if (p.t > end) break;
           const e = blame.get(p.name) ?? [0, 0];
@@ -149,8 +139,7 @@ function human(an: Analysis) {
           if (at) blame.get(at.name)![0]++;
         }
       }
-      const r = mode === 'hardcore' ? `reach ${((reach / TRIES) * 100).toFixed(0)}%` : `misses ${(misses / TRIES).toFixed(1)}`;
-      console.log(`    human ${mode.padEnd(8)} ${diff}  ${r}  clean ${passed}/${TRIES}`);
+      console.log(`    human ${mode.padEnd(8)} ${diff}  first death at ${((reach / TRIES) * 100).toFixed(0)}%  clean ${passed}/${TRIES}`);
     }
   }
 }

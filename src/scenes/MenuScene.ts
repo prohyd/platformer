@@ -135,7 +135,7 @@ export class MenuScene implements Scene {
       ui.button({ x: bx, y, w: mw, h: 44 }, '', () => this.setMode(m), { active });
       const col = m === 'hardcore' ? DANGER : ui.pal.neon;
       ui.text(MODE_NAMES[m], bx + mw / 2, y + 16, 16, active ? col : '#fff', 'center', 900);
-      ui.text(m === 'flow' ? 'ошибки прощаются' : 'смерть — с самого начала', bx + mw / 2, y + 33, 11, 'rgba(255,255,255,0.65)', 'center', 600);
+      ui.text(m === 'flow' ? 'ошибка — назад к чекпоинту' : 'смерть — с самого начала', bx + mw / 2, y + 33, 11, 'rgba(255,255,255,0.65)', 'center', 600);
     });
   }
 

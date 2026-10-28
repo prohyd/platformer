@@ -1,5 +1,6 @@
 // Playing a song: feeds presses to the run in sync with the music, reacts to its
-// events, handles pause, hardcore deaths (and practice checkpoints) and the end of the song.
+// events, handles pause, deaths (back to a checkpoint, or from the start in hardcore)
+// and the end of the song.
 import { CONFIG } from '../config.ts';
 import type { Game } from '../core/Game.ts';
 import type { Command } from '../core/Input.ts';
@@ -7,16 +8,18 @@ import type { Scene } from '../core/Scene.ts';
 import type { LoadedTrack } from '../data/library.ts';
 import type { Track } from '../data/playlist.ts';
 import { records } from '../data/records.ts';
+import { PRACTICE } from '../render/palette.ts';
 import type { WorldView } from '../render/Renderer.ts';
 import { buildChart, hashString } from '../rhythm/generator/buildChart.ts';
 import { Run } from '../rhythm/Run.ts';
+import type { ScoreState } from '../rhythm/Scorer.ts';
 import { xAt } from '../rhythm/speed.ts';
 import { chartStats, cpsAround, type ChartStats } from '../rhythm/stats.ts';
 import type { Chart, Difficulty, Mode } from '../rhythm/types.ts';
 import type { Ui } from '../ui/Ui.ts';
 import { pauseButton } from '../ui/widgets.ts';
 import { FEEDBACK, type FeedbackTargets } from './play/feedback.ts';
-import { drawHud, drawPauseMenu } from './play/hud.ts';
+import { drawHud, drawPauseMenu, type DeathInfo } from './play/hud.ts';
 import { ResultsScene } from './ResultsScene.ts';
 
 /** Colour shifts for the parts of a song, by part label (parts that sound alike look alike). */
@@ -24,8 +27,14 @@ const SECTION_HUES = [0, 40, -35, 80, -70, 120, 160];
 
 /** Add ?autoplay to the address and the game plays itself (handy to preview a level). */
 const AUTOPLAY = new URLSearchParams(location.search).has('autoplay');
-/** Practice checkpoints are at least this many seconds apart. */
-const CHECKPOINT_EVERY = 3;
+
+/** Where the run goes back to after a death, and the score it had there. */
+interface Checkpoint {
+  t: number;
+  x: number;
+  y: number;
+  score: ScoreState;
+}
 
 export class PlayScene implements Scene {
   private readonly game: Game;
@@ -48,17 +57,22 @@ export class PlayScene implements Scene {
   private nextSection = 0;
   private nextAutoCue = 0;
   private comboPulse = 0;
-  /** Hardcore: seconds until the restart after a death (-1 = alive). */
+  /** Seconds until the restart (or the checkpoint) after a death (-1 = alive). */
   private deathTimer = -1;
-  private death: { progress: number; record: boolean; practice: boolean } | null = null;
+  private death: DeathInfo | null = null;
   private readonly feedback: FeedbackTargets;
   /** Hardcore practice (like in Geometry Dash): checkpoints instead of starting over. */
   private readonly practice: boolean;
-  /** Song times of practice checkpoints, and where they are drawn. */
-  private checkpoints: { t: number; x: number; y: number }[] = [];
+  /** Deaths send the run back to the last checkpoint: the «Чекпоинты» mode and hardcore practice. */
+  private readonly checkpointed: boolean;
+  /** Checkpoints passed so far, in order. */
+  private checkpoints: Checkpoint[] = [];
+  /** The start of the song, as a checkpoint for deaths before the first real one. */
+  private readonly start: Checkpoint;
   private nextPattern = 0;
   /** Song time when the run (re)starts: 0, or a checkpoint. */
   private startT = 0;
+  private deaths = 0;
 
   constructor(game: Game, track: Track, loaded: LoadedTrack, attempts: number) {
     this.game = game;
@@ -68,10 +82,12 @@ export class PlayScene implements Scene {
     this.difficulty = game.settings.difficulty;
     this.attempts = attempts;
     this.practice = this.mode === 'hardcore' && game.settings.practice;
+    this.checkpointed = this.mode === 'flow' || this.practice;
     this.chart = buildChart(loaded.analysis, this.difficulty, hashString(track.id), this.mode);
     this.leadIn = attempts > 1 ? CONFIG.timing.restartLeadIn : CONFIG.timing.leadIn;
     this.run = new Run(this.chart, -this.leadIn);
     this.stats = chartStats(this.chart);
+    this.start = { t: 0, x: 0, y: 0, score: this.run.scorer.snapshot() };
     this.baseHue = game.renderer.pal.hue;
     this.feedback = {
       fx: game.renderer.fx,
@@ -129,26 +145,34 @@ export class PlayScene implements Scene {
     else this.restart();
   }
 
-  /** Practice: a checkpoint at the start of a pattern every few seconds. */
+  /** A checkpoint at the start of a pattern every few seconds. */
   private checkCheckpoints() {
     const pats = this.chart.patterns ?? [];
+    const every = this.practice ? CONFIG.timing.checkpointEvery.practice : CONFIG.timing.checkpointEvery.flow;
     while (this.nextPattern < pats.length && pats[this.nextPattern].t <= this.run.t) {
       const t = pats[this.nextPattern++].t;
       const last = this.checkpoints[this.checkpoints.length - 1]?.t ?? this.startT;
-      if (t - last < CHECKPOINT_EVERY || this.run.dead) continue;
+      if (t - last < every || this.run.dead) continue;
       const x = xAt(this.chart.speeds, t);
       const floor = this.chart.floors.find((f) => x >= f.x0 && x <= f.x1);
-      this.checkpoints.push({ t, x, y: floor ? floor.y : this.run.y });
+      const y = floor ? floor.y : this.run.y;
+      this.checkpoints.push({ t, x, y, score: this.run.scorer.snapshot() });
+      this.game.renderer.fx.popup(x, y + 80, '◆ ЧЕКПОИНТ', PRACTICE);
     }
   }
 
-  /** Practice: start again from the last checkpoint, with the music from the same moment. */
+  private get lastCheckpoint() {
+    return this.checkpoints[this.checkpoints.length - 1] ?? this.start;
+  }
+
+  /** Start again from the last checkpoint (or the start), with the music from the same moment. */
   private respawn() {
-    const cp = this.checkpoints[this.checkpoints.length - 1];
-    if (!cp) return this.restart();
+    const cp = this.lastCheckpoint;
     const an = this.loaded.analysis;
+    const died = this.run.scorer;
     this.chart = buildChart(an, this.difficulty, hashString(this.track.id), this.mode);
     this.run = new Run(this.chart, cp.t);
+    this.run.scorer.continueFrom(cp.score, died);
     this.startT = cp.t;
     this.leadIn = CONFIG.timing.restartLeadIn;
     this.deathTimer = -1;
@@ -178,13 +202,13 @@ export class PlayScene implements Scene {
     this.handleEvents();
     this.checkDrops();
     this.checkSections();
-    if (this.practice) this.checkCheckpoints();
+    if (this.checkpointed) this.checkCheckpoints();
 
     if (this.songT > this.chart.duration + 0.4 && !this.run.dead) return this.finish();
     if (this.deathTimer > 0) {
       this.deathTimer -= dt;
       if (this.deathTimer <= 0) {
-        if (this.practice) this.respawn();
+        if (this.checkpointed) this.respawn();
         else this.restart();
       }
     }
@@ -224,11 +248,22 @@ export class PlayScene implements Scene {
   }
 
   private onDeath() {
+    this.deaths++;
     const progress = Math.max(0, Math.min(1, this.run.t / this.chart.duration));
-    // practice runs do not count as records
-    const record = !this.practice && records.saveProgress(this.track.id, this.difficulty, progress);
-    this.death = { progress, record, practice: this.practice };
-    this.deathTimer = this.practice ? CONFIG.timing.deathPause * 0.6 : CONFIG.timing.deathPause;
+    if (!this.checkpointed) {
+      const record = records.saveProgress(this.track.id, this.difficulty, progress);
+      this.death = { progress, record };
+      this.deathTimer = CONFIG.timing.deathPause;
+      return;
+    }
+    // what this mistake costs: the way back and the points won since the checkpoint
+    const cp = this.lastCheckpoint;
+    this.death = {
+      progress,
+      record: false,
+      checkpoint: { atStart: cp === this.start, lost: this.run.scorer.score - cp.score.score, practice: this.practice },
+    };
+    this.deathTimer = CONFIG.timing.deathPause * 0.8;
   }
 
   private finish() {
@@ -247,6 +282,7 @@ export class PlayScene implements Scene {
         attempts: this.attempts,
         stats: this.stats,
         practice: this.practice,
+        deaths: this.deaths,
       }),
     );
   }
@@ -278,6 +314,7 @@ export class PlayScene implements Scene {
       startT: this.startT,
       practice: this.practice,
       checkpoints: this.checkpoints.length,
+      deaths: this.deaths,
     });
     pauseButton(ui, () => this.pause());
     if (this.paused) {

@@ -9,9 +9,9 @@ export function drawTrail(ctx: CanvasRenderingContext2D, run: Run, pal: Palette)
   const tr = run.trail;
   if (tr.length < 2) return;
   ctx.lineCap = 'round';
+  ctx.strokeStyle = pal.neon2;
   for (let i = 1; i < tr.length; i++) {
     const a = i / tr.length;
-    ctx.strokeStyle = run.ghost > 0 ? '#ff4d6d' : pal.neon2;
     ctx.globalAlpha = a * 0.5;
     ctx.lineWidth = 2 + a * 10;
     ctx.beginPath();

@@ -16,7 +16,7 @@ export interface WorldView {
   run: Run | null;
   chart: Chart | null;
   songT: number;
-  /** Practice checkpoints to draw. */
+  /** Checkpoints to draw. */
   checkpoints?: { x: number; y: number }[];
 }
 
@@ -62,10 +62,6 @@ export class Renderer {
     this.pulse.update(dt, lv, view.chart ? view.chart.beats : null, view.songT);
     this.fx.update(dt);
     this.camera.update(dt, view.run, this.pulse);
-    const run = view.run;
-    if (run && run.ghost > 0 && Math.random() < 0.5) {
-      this.fx.particles.add({ x: run.x + (Math.random() - 0.5) * 20, y: run.y + Math.random() * 26, vy: 30, size: 2, color: '#ff4d6d', life: 0.3, max: 0.3, glow: true });
-    }
   }
 
   draw(view: WorldView) {
@@ -88,7 +84,6 @@ export class Renderer {
       ctx.save();
       const s = toScreen(proj, run.x, run.y);
       ctx.setTransform(proj.k, 0, 0, proj.k, s.x, s.y);
-      if (run.ghost > 0 && Math.floor(this.time * 20) % 2) ctx.globalAlpha = 0.4;
       drawHero(ctx, run, pal, pulse, fx.squash, this.time);
       ctx.restore();
     }
