@@ -87,6 +87,11 @@ export function gearButton(ui: Ui, onClick: () => void) {
   });
 }
 
+/** "?" icon, left of the gear. */
+export function helpButton(ui: Ui, onClick: () => void) {
+  ui.iconButton(ui.W - 146, 14, onClick, (_ctx, cx, cy) => ui.text('?', cx, cy + 1, 20, '#fff', 'center', 900));
+}
+
 /** Pause icon, left of the speaker. */
 export function pauseButton(ui: Ui, onClick: () => void) {
   ui.iconButton(ui.W - 100, 14, onClick, (ctx, cx, cy) => {

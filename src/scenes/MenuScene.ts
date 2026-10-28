@@ -1,8 +1,10 @@
-// Main menu: mode, difficulty, track list, "add your own track", volume window.
+// Main menu: mode, difficulty, track list, "add your own track", volume window
+// and the tour that explains the controls on the first visit.
 import type { Game } from '../core/Game.ts';
 import type { Command } from '../core/Input.ts';
 import type { Scene } from '../core/Scene.ts';
 import { records } from '../data/records.ts';
+import { storage } from '../data/storage.ts';
 import type { Track } from '../data/playlist.ts';
 import { DANGER, RANK_COLORS } from '../render/palette.ts';
 import type { WorldView } from '../render/Renderer.ts';
@@ -10,11 +12,14 @@ import { DIFF_NAMES, MODE_NAMES, type Difficulty, type Mode } from '../rhythm/ty
 import type { Rank } from '../rhythm/Scorer.ts';
 import { buildChart, hashString } from '../rhythm/generator/buildChart.ts';
 import { chartStats } from '../rhythm/stats.ts';
-import type { Ui } from '../ui/Ui.ts';
-import { drawLogo, gearButton, volumeControls } from '../ui/widgets.ts';
+import type { Rect, Ui } from '../ui/Ui.ts';
+import { drawLogo, gearButton, helpButton, volumeControls } from '../ui/widgets.ts';
+import { drawTourCard, TOUR } from './menu/tour.ts';
 
 const ROW_H = 60;
 const ROW_GAP = 8;
+/** Remembers that the menu tour was seen. */
+const TOUR_SEEN = 'tour-seen';
 
 export class MenuScene implements Scene {
   private readonly game: Game;
@@ -24,6 +29,11 @@ export class MenuScene implements Scene {
   /** Level ratings of tracks that were already played, by track + mode + difficulty. */
   private readonly ratings = new Map<string, string>();
   private showVolume = false;
+  /** Step of the menu tour on screen (-1 = none). */
+  private tour = storage.get(TOUR_SEEN, false) ? -1 : 0;
+  /** Where the mode switch and the difficulty buttons were drawn (the tour points at them). */
+  private modeRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private diffRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
 
   constructor(game: Game) {
     this.game = game;
@@ -52,6 +62,16 @@ export class MenuScene implements Scene {
     this.game.audio.sound('click');
   }
 
+  private nextTourStep() {
+    this.game.audio.sound('click');
+    if (++this.tour >= TOUR.length) this.endTour();
+  }
+
+  private endTour() {
+    this.tour = -1;
+    storage.set(TOUR_SEEN, true);
+  }
+
   private playSelected() {
     const t = this.tracks[this.game.settings.selected];
     if (t) this.game.play(t);
@@ -70,6 +90,12 @@ export class MenuScene implements Scene {
     if (this.showVolume) {
       if (cmd === 'back' || cmd === 'primary' || cmd === 'confirm') this.showVolume = false;
       return;
+    }
+    if (this.tour >= 0) {
+      if (cmd === 'primary' || cmd === 'confirm') return this.nextTourStep();
+      if (cmd === 'back') return this.endTour();
+      // the controls the tour talks about still work
+      if (cmd !== 'left' && cmd !== 'right' && cmd !== 'toggleMode') return;
     }
     const n = this.tracks.length;
     switch (cmd) {
@@ -121,13 +147,37 @@ export class MenuScene implements Scene {
     const listH = Math.max(120, H - ly - 118);
     this.drawTrackList(ui, lx, ly, listW, listH);
     this.drawBottomButtons(ui, lx, ly + listH + 14, listW);
-    ui.text('Пробел / клик — прыжок  ·  ↑↓ трек  ·  ←→ сложность  ·  Tab режим  ·  можно перетащить MP3 в окно', W / 2, H - 22, 12, 'rgba(255,255,255,0.6)', 'center', 600);
+    ui.text('Пробел / клик — прыжок  ·  ↑↓ трек  ·  ←→ сложность  ·  Tab режим  ·  ? — подсказки  ·  можно перетащить MP3 в окно', W / 2, H - 22, 12, 'rgba(255,255,255,0.6)', 'center', 600);
 
-    if (this.showVolume) this.drawVolumeWindow(ui);
-    else gearButton(ui, () => (this.showVolume = true));
+    if (this.tour >= 0) this.drawTour(ui);
+    else if (this.showVolume) this.drawVolumeWindow(ui);
+    else {
+      gearButton(ui, () => (this.showVolume = true));
+      helpButton(ui, () => (this.tour = 0));
+    }
+  }
+
+  /** Everything is dimmed except the control the current step is about; that one stays clickable. */
+  private drawTour(ui: Ui) {
+    ui.clearHotspots();
+    ui.dim(0.72);
+    const step = TOUR[this.tour];
+    let target: Rect;
+    if (step.target === 'mode') {
+      target = this.modeRect;
+      this.drawModeSwitch(ui, target.x, target.y, target.w);
+    } else if (step.target === 'difficulty') {
+      target = this.diffRect;
+      this.drawDifficulty(ui, target.x, target.y, target.w);
+    } else {
+      target = { x: ui.W - 100, y: 14, w: 40, h: 40 };
+      gearButton(ui, () => {});
+    }
+    drawTourCard(ui, this.tour, target, this.game.audio, { next: () => this.nextTourStep(), skip: () => this.endTour() });
   }
 
   private drawModeSwitch(ui: Ui, x: number, y: number, w: number) {
+    this.modeRect = { x, y, w, h: 44 };
     const mw = (w - 8) / 2;
     (['flow', 'hardcore'] as Mode[]).forEach((m, i) => {
       const bx = x + i * (mw + 8);
@@ -140,6 +190,7 @@ export class MenuScene implements Scene {
   }
 
   private drawDifficulty(ui: Ui, x: number, y: number, w: number) {
+    this.diffRect = { x, y, w, h: 34 };
     const dw = (w - 16) / 3;
     DIFF_NAMES.forEach((name, i) =>
       ui.button({ x: x + i * (dw + 8), y, w: dw, h: 34 }, name, () => this.setDifficulty(i as Difficulty), { active: this.game.settings.difficulty === i }),
