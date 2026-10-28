@@ -24,3 +24,9 @@ export function speedAt(segs: SpeedSeg[], t: number) {
   return segAt(segs, t).speed;
 }
 
+/** Song time when the runner is at world x. */
+export function tAt(segs: SpeedSeg[], x: number) {
+  let s = segs[0];
+  for (const g of segs) if (g.x <= x) s = g;
+  return s.t + (x - s.x) / s.speed;
+}
