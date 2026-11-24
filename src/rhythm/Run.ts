@@ -1,10 +1,10 @@
 // The run: runner physics locked to the song clock, collisions and mistakes.
 // Scoring lives in Scorer; what happened during a frame is reported as RunEvents
 // (the play scene turns them into sounds and visual effects).
-import { CEIL_H, HALF, PH, SPIKE_H } from './geometry.ts';
+import { CEIL_BAR, HALF, PH, SPIKE_H, teeth } from './geometry.ts';
 import { Scorer, type Grade } from './Scorer.ts';
 import { speedAt, xAt } from './speed.ts';
-import type { Chart, Cue, Orb, Pit } from './types.ts';
+import type { Ceil, Chart, Cue, Orb, Pit, Spike } from './types.ts';
 
 export type { Grade } from './Scorer.ts';
 
@@ -42,6 +42,15 @@ export class Run {
   /** Recent positions for the trail. */
   trail: { x: number; y: number }[] = [];
   private floorIdx = 0;
+  /** Moving start indices into the sorted object lists: everything before them is behind us. */
+  private spikeIdx = 0;
+  private ceilIdx = 0;
+  private orbIdx = 0;
+  private padIdx = 0;
+  private noteIdx = 0;
+  private pitIdx = 0;
+  /** How far behind us an orb can still be pressed (timing window at the fastest segment). */
+  private readonly orbReach: number;
 
   constructor(c: Chart, startT: number) {
     this.c = c;
@@ -50,6 +59,9 @@ export class Run {
     this.t = startT;
     this.x = xAt(c.speeds, startT);
     this.y = this.floorAt(this.x - HALF, this.x + HALF) ?? 0;
+    let maxSpeed = 0;
+    for (const s of c.speeds) maxSpeed = Math.max(maxSpeed, s.speed);
+    this.orbReach = c.tol.orb * maxSpeed;
   }
 
   // ================================================================== public
@@ -99,9 +111,12 @@ export class Run {
     const tol = this.c.tol;
     const speed = speedAt(this.c.speeds, this.t);
     const reach = tol.orb * speed;
+    const orbs = this.c.orbs;
     // the nearest orb wins: in fast chains the next orb is already within reach
+    while (this.orbIdx < orbs.length && (orbs[this.orbIdx].used || orbs[this.orbIdx].x < this.x - this.orbReach)) this.orbIdx++;
     let best: Orb | null = null;
-    for (const o of this.c.orbs) {
+    for (let i = this.orbIdx; i < orbs.length; i++) {
+      const o = orbs[i];
       if (o.x - this.x > reach) break;
       if (o.used || this.x - o.x > reach) continue;
       // where the runner will be when passing the orb; on a steep path a slightly early
@@ -222,7 +237,10 @@ export class Run {
   private resolveWalls(prevY: number) {
     const front = this.floorAt(this.x + HALF - 2, this.x + HALF);
     if (front !== null && front > this.y + 1.5 && prevY < front - 1) {
-      if (front - this.y >= 6) this.miss();
+      if (front - this.y >= 6) {
+        this.miss();
+        return;
+      }
       this.y = front;
       this.vy = 0;
       this.grounded = true;
@@ -246,22 +264,65 @@ export class Run {
   }
 
   private checkHazards() {
-    for (const s of this.c.spikes) {
+    const spikes = this.c.spikes;
+    while (this.spikeIdx < spikes.length && spikes[this.spikeIdx].x + spikes[this.spikeIdx].w < this.x - HALF) this.spikeIdx++;
+    for (let i = this.spikeIdx; i < spikes.length; i++) {
+      const s = spikes[i];
       if (s.x > this.x + HALF) break;
-      if (s.x + s.w < this.x - HALF) continue;
-      if (this.y < s.y + SPIKE_H - 6 && this.y + PH > s.y) return this.miss();
+      if (this.hitSpikeRow(s)) return this.miss();
     }
-    for (const s of this.c.ceils) {
+    const ceils = this.c.ceils;
+    while (this.ceilIdx < ceils.length && ceils[this.ceilIdx].x + ceils[this.ceilIdx].w < this.x - HALF) this.ceilIdx++;
+    for (let i = this.ceilIdx; i < ceils.length; i++) {
+      const s = ceils[i];
       if (s.x > this.x + HALF) break;
-      if (s.x + s.w < this.x - HALF) continue;
-      if (this.y + PH > s.y + 3 && this.y < s.y + CEIL_H) return this.miss();
+      if (this.hitCeilRow(s)) return this.miss();
     }
+  }
+
+  /**
+   * The player's box vs a row of triangle spikes — the same shape the renderer draws
+   * (world.ts `spikeRow`), not a solid rectangle: the empty space beside a tooth is safe.
+   */
+  private hitSpikeRow(s: Spike): boolean {
+    const grace = 4; // the sharpest pixels of a tooth don't count
+    if (this.y >= s.y + SPIKE_H - grace || this.y + PH <= s.y) return false;
+    const xa = Math.max(this.x - HALF + 2, s.x);
+    const xb = Math.min(this.x + HALF - 2, s.x + s.w);
+    // the roof is highest at tooth centres: check both ends and every centre inside
+    const { n, sw } = teeth(s.w, 1);
+    let roof = Math.max(toothTop(s, sw, xa), toothTop(s, sw, xb));
+    const i0 = Math.max(0, Math.ceil((xa - s.x) / sw - 0.5));
+    const i1 = Math.min(n - 1, Math.floor((xb - s.x) / sw - 0.5));
+    if (i0 <= i1) roof = s.y + SPIKE_H;
+    return this.y < roof - grace;
+  }
+
+  /** A ceiling trap: a solid slab with teeth hanging from it (again the drawn shape). */
+  private hitCeilRow(s: Ceil): boolean {
+    const grace = 3;
+    const head = this.y + PH;
+    if (head <= s.y + grace) return false; // below the tooth tips
+    if (head > s.y + CEIL_BAR) return true; // inside the solid slab
+    const xa = Math.max(this.x - HALF + 2, s.x);
+    const xb = Math.min(this.x + HALF - 2, s.x + s.w);
+    // teeth hang lowest at their centres: check both ends and every centre inside
+    const { n, sw } = teeth(s.w, 2);
+    let low = Math.min(toothTip(s, sw, xa), toothTip(s, sw, xb));
+    const i0 = Math.max(0, Math.ceil((xa - s.x) / sw - 0.5));
+    const i1 = Math.min(n - 1, Math.floor((xb - s.x) / sw - 0.5));
+    if (i0 <= i1) low = s.y;
+    return head > low + grace;
   }
 
   private checkPads() {
     if (!this.grounded) return;
-    for (const p of this.c.pads) {
-      if (this.x >= p.x && this.x - p.x < 24 && Math.abs(p.y - this.y) < 2) {
+    const pads = this.c.pads;
+    while (this.padIdx < pads.length && pads[this.padIdx].x + 24 <= this.x) this.padIdx++;
+    for (let i = this.padIdx; i < pads.length; i++) {
+      const p = pads[i];
+      if (p.x > this.x) break;
+      if (Math.abs(p.y - this.y) < 2) {
         this.jump(p.v, 'pad');
         this.events.push({ type: 'pad', x: p.x, y: p.y });
         return;
@@ -270,10 +331,12 @@ export class Run {
   }
 
   private collectGems() {
-    for (const n of this.c.notes) {
-      if (n.taken) continue;
-      if (n.x > this.x + 30) break;
-      if (Math.abs(n.x - this.x) < 26 && Math.abs(n.y - (this.y + PH / 2)) < 30) {
+    const notes = this.c.notes;
+    while (this.noteIdx < notes.length && notes[this.noteIdx].x < this.x - 26) this.noteIdx++;
+    for (let i = this.noteIdx; i < notes.length; i++) {
+      const n = notes[i];
+      if (n.x > this.x + 26) break;
+      if (!n.taken && Math.abs(n.y - (this.y + PH / 2)) < 30) {
         n.taken = true;
         this.scorer.gem();
         this.events.push({ type: 'note', x: n.x, y: n.y });
@@ -282,6 +345,25 @@ export class Run {
   }
 
   private pitAt(x: number): Pit | undefined {
-    return this.c.pits.find((p) => x >= p.x0 - HALF && x <= p.x1 + HALF);
+    const ps = this.c.pits;
+    if (!ps.length) return undefined;
+    while (this.pitIdx > 0 && ps[this.pitIdx].x0 - HALF > x) this.pitIdx--;
+    while (this.pitIdx < ps.length - 1 && ps[this.pitIdx].x1 + HALF < x) this.pitIdx++;
+    const p = ps[this.pitIdx];
+    return x >= p.x0 - HALF && x <= p.x1 + HALF ? p : undefined;
   }
+}
+
+/** Height of the top edge of a spike row's tooth at world x (0 at the gaps between teeth). */
+function toothTop(s: Spike, sw: number, x: number): number {
+  const u = (x - s.x) / sw;
+  const d = Math.abs(u - (Math.floor(u) + 0.5));
+  return s.y + SPIKE_H * Math.max(0, 1 - 2 * d);
+}
+
+/** Height of the bottom tip of a ceiling row's tooth at world x (the slab bottom between teeth). */
+function toothTip(s: Ceil, sw: number, x: number): number {
+  const u = (x - s.x) / sw;
+  const d = Math.abs(u - (Math.floor(u) + 0.5));
+  return s.y + CEIL_BAR * Math.min(1, 2 * d);
 }

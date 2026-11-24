@@ -1,5 +1,5 @@
 // The level itself: floors, beat lines, obstacles, orbs, gems. Drawn in world space (y up).
-import { CEIL_H, PH, SPIKE_H } from '../../rhythm/geometry.ts';
+import { CEIL_BAR, PH, SPIKE_H, teeth } from '../../rhythm/geometry.ts';
 import { xAt } from '../../rhythm/speed.ts';
 import type { Chart } from '../../rhythm/types.ts';
 import type { Camera } from '../Camera.ts';
@@ -14,6 +14,11 @@ export interface WorldDrawContext {
   pulse: MusicPulse;
   /** Seconds since start, for idle animations. */
   time: number;
+}
+
+/** Object lists are sorted by x: once this is true, nothing further can be visible. */
+function pastRight(cam: Camera, x: number) {
+  return x > cam.x + cam.viewW / cam.zoom + 200;
 }
 
 /** The menu background: an endless neon floor ticking at 120 BPM. */
@@ -54,6 +59,7 @@ function drawFloors({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, son
   const deep = -900;
   // ground blocks
   for (const f of c.floors) {
+    if (pastRight(cam, f.x0)) break;
     if (!cam.visible(f.x0, f.x1)) continue;
     const g = ctx.createLinearGradient(0, f.y, 0, f.y - 300);
     g.addColorStop(0, p.ground);
@@ -63,10 +69,17 @@ function drawFloors({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, son
   }
   // beat lines in the ground: they light up when their beat plays
   const beats = c.beats;
-  for (let i = 0; i < beats.length; i++) {
+  // beat x grows with beat time: binary-search the first beat that can be on screen
+  let lo = 0;
+  let hi = beats.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xAt(c.speeds, beats[mid]) < cam.x - 50) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < beats.length; i++) {
     const x = xAt(c.speeds, beats[i]);
-    if (x < cam.x - 50) continue;
-    if (x > cam.x + cam.viewW + 200) break;
+    if (pastRight(cam, x)) break;
     const f = c.floors.find((fl) => x >= fl.x0 && x <= fl.x1);
     if (!f) continue;
     const d = songT - beats[i];
@@ -87,6 +100,7 @@ function drawFloors({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, son
   ctx.lineWidth = 3 + 1.5 * pulse.beatPulse;
   ctx.beginPath();
   for (const f of c.floors) {
+    if (pastRight(cam, f.x0)) break;
     if (!cam.visible(f.x0, f.x1)) continue;
     ctx.moveTo(f.x0, f.y - 260);
     ctx.lineTo(f.x0, f.y);
@@ -97,6 +111,7 @@ function drawFloors({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, son
   ctx.shadowBlur = 0;
   // void glow in pits
   for (const pt of c.pits) {
+    if (pastRight(cam, pt.x0)) break;
     if (!cam.visible(pt.x0, pt.x1)) continue;
     const g = ctx.createLinearGradient(0, pt.y - 40, 0, pt.y - 260);
     g.addColorStop(0, `hsla(${p.hue + 300}, 100%, 60%, 0.18)`);
@@ -154,6 +169,7 @@ function approachRing(ctx: CanvasRenderingContext2D, x: number, y: number, dtTo:
 /** Glowing arrows on the floor where a jump should start. */
 function drawJumpMarkers({ ctx, cam, pal: p }: WorldDrawContext, c: Chart, songT: number) {
   for (const cu of c.cues) {
+    if (pastRight(cam, cu.x - 30)) break;
     if (cu.kind !== 'jump' || !cam.visible(cu.x - 30, cu.x + 30)) continue;
     ctx.globalAlpha = cu.judged ? 0.15 : 0.9;
     ctx.fillStyle = p.accent;
@@ -174,8 +190,7 @@ function drawJumpMarkers({ ctx, cam, pal: p }: WorldDrawContext, c: Chart, songT
 // ---------------------------------------------------------------- hazards
 
 function spikeRow(ctx: CanvasRenderingContext2D, x: number, w: number, baseY: number, tipY: number, minCount: number) {
-  const n = Math.max(minCount, Math.round(w / 13));
-  const sw = w / n;
+  const { n, sw } = teeth(w, minCount);
   for (let i = 0; i < n; i++) {
     ctx.beginPath();
     ctx.moveTo(x + i * sw, baseY);
@@ -197,6 +212,7 @@ function hazardStyle(ctx: CanvasRenderingContext2D, p: Palette, pulse: MusicPuls
 
 function drawSpikes({ ctx, cam, pal, pulse }: WorldDrawContext, c: Chart) {
   for (const s of c.spikes) {
+    if (pastRight(cam, s.x)) break;
     if (!cam.visible(s.x, s.x + s.w)) continue;
     hazardStyle(ctx, pal, pulse);
     spikeRow(ctx, s.x, s.w, s.y, s.y + SPIKE_H * (1 + 0.08 * pulse.beatPulse), 1);
@@ -206,12 +222,13 @@ function drawSpikes({ ctx, cam, pal, pulse }: WorldDrawContext, c: Chart) {
 
 function drawCeilings({ ctx, cam, pal, pulse }: WorldDrawContext, c: Chart) {
   for (const s of c.ceils) {
+    if (pastRight(cam, s.x)) break;
     if (!cam.visible(s.x, s.x + s.w)) continue;
     ctx.fillStyle = '#12061e';
-    ctx.fillRect(s.x - 4, s.y + 14, s.w + 8, 600);
+    ctx.fillRect(s.x - 4, s.y + CEIL_BAR, s.w + 8, 600);
     hazardStyle(ctx, pal, pulse);
-    ctx.strokeRect(s.x - 4, s.y + 14, s.w + 8, 600);
-    spikeRow(ctx, s.x, s.w, s.y + 14, s.y - (CEIL_H - 34) - 2 * pulse.beatPulse, 2);
+    ctx.strokeRect(s.x - 4, s.y + CEIL_BAR, s.w + 8, 600);
+    spikeRow(ctx, s.x, s.w, s.y + CEIL_BAR, s.y - 2 * pulse.beatPulse, 2);
     ctx.shadowBlur = 0;
   }
 }
@@ -220,6 +237,7 @@ function drawCeilings({ ctx, cam, pal, pulse }: WorldDrawContext, c: Chart) {
 
 function drawPads({ ctx, cam, pal: p, time }: WorldDrawContext, c: Chart) {
   for (const pd of c.pads) {
+    if (pastRight(cam, pd.x - 30)) break;
     if (!cam.visible(pd.x - 30, pd.x + 30)) continue;
     // big pads (drops) are gold-ish accent, small ones pink
     const col = pd.big ? p.accent : p.neon2;
@@ -284,6 +302,7 @@ function drawPortals({ ctx, cam, pal: p, pulse, time }: WorldDrawContext, c: Cha
 
 function drawOrbs({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, songT: number) {
   for (const o of c.orbs) {
+    if (pastRight(cam, o.x - 40)) break;
     if (!cam.visible(o.x - 40, o.x + 40)) continue;
     const oc = o.offbeat ? p.neon2 : p.accent;
     ctx.globalAlpha = o.used ? 0.25 : 1;
@@ -304,6 +323,7 @@ function drawOrbs({ ctx, cam, pal: p, pulse }: WorldDrawContext, c: Chart, songT
 
 function drawGems({ ctx, cam, pal: p, pulse, time }: WorldDrawContext, c: Chart) {
   for (const n of c.notes) {
+    if (pastRight(cam, n.x - 20)) break;
     if (n.taken || !cam.visible(n.x - 20, n.x + 20)) continue;
     const s = 6 + 2 * pulse.beatPulse;
     ctx.save();
