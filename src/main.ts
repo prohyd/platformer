@@ -1,5 +1,10 @@
 import './style.css';
+import { evAppOpen } from './analytics/events.ts';
+import { initMetrika } from './analytics/metrika.ts';
 import { Game } from './core/Game.ts';
+
+initMetrika();
+evAppOpen();
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 

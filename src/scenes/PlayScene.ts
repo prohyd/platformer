@@ -2,6 +2,7 @@
 // events, handles pause, deaths (back to a checkpoint, or from the start in hardcore)
 // and the end of the song.
 import { CONFIG } from '../config.ts';
+import { evDeath, evLevelComplete, evLevelQuit } from '../analytics/events.ts';
 import type { Game } from '../core/Game.ts';
 import type { Command } from '../core/Input.ts';
 import type { Scene } from '../core/Scene.ts';
@@ -250,6 +251,7 @@ export class PlayScene implements Scene {
   private onDeath() {
     this.deaths++;
     const progress = Math.max(0, Math.min(1, this.run.t / this.chart.duration));
+    evDeath(this.track, this.mode, this.difficulty, progress);
     if (!this.checkpointed) {
       const record = records.saveProgress(this.track.id, this.difficulty, progress);
       this.death = { progress, record };
@@ -270,6 +272,17 @@ export class PlayScene implements Scene {
     const sc = this.run.scorer;
     const best = { score: sc.score, rank: sc.rank, acc: sc.accuracy, combo: sc.maxCombo };
     const record = !this.practice && records.saveFinished(this.track.id, this.difficulty, this.mode, best);
+    evLevelComplete(this.track, this.mode, this.difficulty, {
+      score: sc.score,
+      rank: sc.rank,
+      acc: sc.accuracy,
+      combo: sc.maxCombo,
+      deaths: this.deaths,
+      attempts: this.attempts,
+      practice: this.practice,
+      record,
+      duration: this.chart.duration,
+    });
     this.game.go(
       new ResultsScene(this.game, {
         track: this.track,
@@ -285,6 +298,12 @@ export class PlayScene implements Scene {
         deaths: this.deaths,
       }),
     );
+  }
+
+  /** Quit to the menu mid-song from the pause menu. */
+  private quit() {
+    evLevelQuit(this.track, this.mode, this.difficulty, Math.max(0, Math.min(1, this.run.t / this.chart.duration)));
+    this.game.toMenu();
   }
 
   // ---------------------------------------------------------------- drawing
@@ -321,7 +340,7 @@ export class PlayScene implements Scene {
       drawPauseMenu(ui, this.game.audio, {
         resume: () => this.resume(),
         restart: () => this.restart(),
-        menu: () => this.game.toMenu(),
+        menu: () => this.quit(),
         practice: this.mode === 'hardcore' ? { on: this.practice, toggle: () => this.togglePractice() } : undefined,
       });
     }

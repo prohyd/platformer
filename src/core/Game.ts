@@ -1,6 +1,7 @@
 // The application: owns the shared services, runs the main loop and switches scenes.
 import { analyze } from '../audio/analyze.ts';
 import { AudioEngine } from '../audio/AudioEngine.ts';
+import { evLevelStart, evTrackUpload } from '../analytics/events.ts';
 import { TrackLibrary } from '../data/library.ts';
 import type { Track } from '../data/playlist.ts';
 import { Settings } from '../data/settings.ts';
@@ -82,6 +83,7 @@ export class Game {
 
   /** Load (if needed) and start a song. */
   play(track: Track, opts: PlayOptions = {}) {
+    evLevelStart(track, this.settings.mode, this.settings.difficulty, opts.attempts ?? 1);
     this.go(new LoadingScene(this, track, opts.attempts ?? 1));
   }
 
@@ -91,6 +93,7 @@ export class Game {
 
   /** A file from the picker or drag & drop: add it to the list and play it. */
   addFile(f: File) {
+    evTrackUpload(f);
     const track = this.library.addFile(f);
     this.settings.select(this.library.indexOf(track));
     this.play(track);
